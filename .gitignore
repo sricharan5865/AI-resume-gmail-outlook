@@ -1,0 +1,32 @@
+# Dependency directories
+node_modules/
+
+# Build outputs
+client/dist/
+dist/
+
+# Local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Databases and user data
+server/uploads/*
+!server/uploads/.gitkeep
+uploads/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDEs/OS files
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
