@@ -696,8 +696,15 @@ app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => 
     }
 
     if (duplicate) {
-      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-      return res.status(409).json({ error: `Candidate with email ${parsedData.email || 'N/A'} (${duplicate.name}) already exists in the pipeline.` });
+      return res.status(409).json({
+        error: `Candidate with email ${parsedData.email || 'N/A'} (${duplicate.name}) already exists in the pipeline.`,
+        duplicate: true,
+        candidate: duplicate,
+        tempFile: req.file.filename,
+        parsedData: parsedData,
+        pdfText: pdfText,
+        jobId: jobId || null
+      });
     }
 
     let settings = await Settings.findById('global');
@@ -741,6 +748,125 @@ app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => 
     res.json(newCandidate);
   } catch (error) {
     if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/candidates/upload/resolve', async (req, res) => {
+  const { action, candidateId, tempFile, parsedData, pdfText, jobId } = req.body;
+
+  try {
+    if (action === 'update') {
+      const candidate = await Candidate.findOne({ id: candidateId });
+      if (!candidate) {
+        if (tempFile) {
+          const tempPath = path.join(UPLOADS_DIR, tempFile);
+          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        }
+        return res.status(404).json({ error: 'Candidate not found.' });
+      }
+
+      // Delete old file if exists
+      if (candidate.resumeUrl) {
+        const oldFilename = candidate.resumeUrl.replace('/uploads/', '');
+        const oldFilepath = path.join(UPLOADS_DIR, oldFilename);
+        if (fs.existsSync(oldFilepath) && oldFilename !== tempFile) {
+          try { fs.unlinkSync(oldFilepath); } catch (e) {}
+        }
+      }
+
+      // Update fields
+      candidate.name = parsedData.name || candidate.name;
+      candidate.email = parsedData.email || candidate.email;
+      candidate.phone = parsedData.phone || candidate.phone;
+      candidate.linkedinUrl = parsedData.linkedinUrl || candidate.linkedinUrl;
+      candidate.skills = parsedData.skills || candidate.skills;
+      candidate.experience = parsedData.experience || candidate.experience;
+      candidate.education = parsedData.education || candidate.education;
+      candidate.resumeText = pdfText || candidate.resumeText;
+      if (tempFile) {
+        candidate.resumeUrl = `/uploads/${tempFile}`;
+      }
+      if (jobId) {
+        candidate.jobId = jobId;
+      }
+
+      let settings = await Settings.findById('global');
+
+      // Re-score candidate
+      const ownCategoryResult = await scoreCandidateByOwnCategory(parsedData);
+      candidate.ownCategoryScore = ownCategoryResult.score || 0;
+      candidate.ownCategoryMatchingSkills = ownCategoryResult.matchingSkills || [];
+      candidate.ownCategoryMissingSkills = ownCategoryResult.missingSkills || [];
+      candidate.ownCategoryExplanation = ownCategoryResult.reasoning || '';
+
+      let job = null;
+      let scoringResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
+      if (candidate.jobId) {
+        job = await Job.findOne({ id: candidate.jobId });
+      }
+      if (job) {
+        scoringResult = await scoreCandidate(parsedData, job);
+      }
+      candidate.matchScore = scoringResult.score || 0;
+      candidate.matchingSkills = scoringResult.matchingSkills || [];
+      candidate.missingSkills = scoringResult.missingSkills || [];
+      candidate.matchExplanation = scoringResult.reasoning || '';
+
+      // Re-generate tags
+      try {
+        const generatedTags = await generateTags(parsedData, job || { title: 'General', description: '' }, settings?.tagPreferences || []);
+        candidate.tags = generatedTags;
+      } catch (e) {
+        console.warn('Tag generation failed during update:', e.message);
+      }
+
+      candidate.history.push({
+        date: new Date().toISOString(),
+        type: 'Updated',
+        text: `Manual upload updated resume: ${tempFile ? tempFile.split('-').slice(2).join('-') : 'Updated'}`
+      });
+
+      await candidate.save();
+      searchIndex.buildIndex(await Candidate.find());
+      return res.json(candidate);
+
+    } else if (action === 'remove') {
+      const candidate = await Candidate.findOne({ id: candidateId });
+      if (candidate) {
+        if (candidate.resumeUrl) {
+          const filename = candidate.resumeUrl.replace('/uploads/', '');
+          const filepath = path.join(UPLOADS_DIR, filename);
+          if (fs.existsSync(filepath)) {
+            try { fs.unlinkSync(filepath); } catch (e) {}
+          }
+        }
+        await Candidate.deleteOne({ id: candidateId });
+      }
+
+      // Delete the new temp file
+      if (tempFile) {
+        const tempPath = path.join(UPLOADS_DIR, tempFile);
+        if (fs.existsSync(tempPath)) {
+          try { fs.unlinkSync(tempPath); } catch (e) {}
+        }
+      }
+
+      searchIndex.buildIndex(await Candidate.find());
+      return res.json({ success: true, removed: true, candidateId });
+
+    } else {
+      // cancel/default cleanup
+      if (tempFile) {
+        const tempPath = path.join(UPLOADS_DIR, tempFile);
+        if (fs.existsSync(tempPath)) {
+          try { fs.unlinkSync(tempPath); } catch (e) {}
+        }
+      }
+      return res.json({ success: true, cancelled: true });
+    }
+  } catch (error) {
+    console.error('Failed to resolve duplicate upload:', error);
     res.status(500).json({ error: error.message });
   }
 });

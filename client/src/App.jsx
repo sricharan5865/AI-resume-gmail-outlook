@@ -9,7 +9,7 @@ import EmailModal from './components/EmailModal';
 import SettingsView from './components/Settings';
 import TagSearch from './components/TagSearch';
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -183,9 +183,16 @@ export default function App() {
     }
   };
 
-  const handleCandidateImported = (newCandidate) => {
-    setCandidates(prev => [...prev, newCandidate]);
-    showToast(`Successfully extracted ${newCandidate.name} to the pipeline!`, 'success');
+  const handleCandidateImported = (newCandidate, isUpdate = false) => {
+    setCandidates(prev => {
+      const exists = prev.some(c => c.id === newCandidate.id);
+      if (exists) {
+        return prev.map(c => c.id === newCandidate.id ? newCandidate : c);
+      } else {
+        return [...prev, newCandidate];
+      }
+    });
+    showToast(`Successfully ${isUpdate ? 'updated' : 'extracted'} ${newCandidate.name} ${isUpdate ? 'in' : 'to'} the pipeline!`, 'success');
     // Open candidate details automatically to see ranking
     setSelectedCandidate(newCandidate);
   };

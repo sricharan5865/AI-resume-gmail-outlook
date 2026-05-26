@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Briefcase, MapPin, Sparkles, Eye, Mail, Upload, FileText, Plus, Loader, Filter, Trash2, Search } from 'lucide-react';
+import { Briefcase, MapPin, Sparkles, Eye, Mail, Upload, FileText, Plus, Loader, Filter, Trash2, Search, AlertCircle, X } from 'lucide-react';
 
 const STAGES = ['Inbox', 'Shortlist', 'Interview', 'Offered', 'Rejected'];
 
@@ -20,6 +20,7 @@ export default function PipelineBoard({
   const [uploadProgress, setUploadProgress] = useState('');
   const [draggedCandidateId, setDraggedCandidateId] = useState(null);
   const [activeDragStage, setActiveDragStage] = useState(null);
+  const [duplicateInfo, setDuplicateInfo] = useState(null);
 
   // Sorting state
   const [sortBy, setSortBy] = useState('score-desc');
@@ -145,8 +146,23 @@ export default function PipelineBoard({
           });
 
           if (!res.ok) {
-            const errData = await res.json();
-            throw new Error(errData.error || 'Upload failed');
+            let errMsg = 'Upload failed';
+            try {
+              const errData = await res.json();
+              if (res.status === 409 && errData.duplicate) {
+                setDuplicateInfo({
+                  candidate: errData.candidate,
+                  tempFile: errData.tempFile,
+                  parsedData: errData.parsedData,
+                  pdfText: errData.pdfText,
+                  jobId: errData.jobId,
+                  fileName: file.name
+                });
+                break;
+              }
+              errMsg = errData.error || errMsg;
+            } catch (jsonErr) {}
+            throw new Error(errMsg);
           }
 
           const newCandidate = await res.json();
@@ -158,7 +174,9 @@ export default function PipelineBoard({
         }
       }
 
-      if (failures.length > 0) {
+      if (duplicateInfo) {
+        // If upload stopped due to duplicate, don't show general success alerts yet
+      } else if (failures.length > 0) {
         alert(`Upload complete!\nSuccessfully processed: ${successes.length} resume(s).\nFailed: ${failures.length} resume(s).\n\nErrors:\n${failures.join('\n')}`);
       } else {
         alert(`Successfully uploaded and parsed ${successes.length} resume(s)!`);
@@ -172,6 +190,48 @@ export default function PipelineBoard({
       setUploadJobId('');
       // Clear input
       e.target.value = null;
+    }
+  };
+
+  const handleResolveDuplicate = async (action) => {
+    if (!duplicateInfo) return;
+    
+    try {
+      setUploadingFile(true);
+      setUploadProgress('Resolving duplicate...');
+      const res = await fetch(`${backendUrl}/api/candidates/upload/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          action,
+          candidateId: duplicateInfo.candidate.id,
+          tempFile: duplicateInfo.tempFile,
+          parsedData: duplicateInfo.parsedData,
+          pdfText: duplicateInfo.pdfText,
+          jobId: duplicateInfo.jobId
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || 'Failed to resolve duplicate');
+      }
+
+      const data = await res.json();
+      if (action === 'update') {
+        onManualUpload(data, true);
+      } else if (action === 'remove') {
+        onCandidateDeleted(duplicateInfo.candidate.id);
+      }
+    } catch (err) {
+      console.error(err);
+      alert(err.message || 'Error resolving duplicate');
+    } finally {
+      setUploadingFile(false);
+      setUploadProgress('');
+      setDuplicateInfo(null);
     }
   };
 
@@ -607,6 +667,58 @@ export default function PipelineBoard({
         </div>
       </div>
 
+      {/* Duplicate Candidate Modal Overlay */}
+      {duplicateInfo && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.75)', zIndex: 110, backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+          <div className="glass" style={{ width: '100%', maxWidth: '500px', borderRadius: 'var(--radius-lg)', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
+            
+            {/* Header */}
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', color: '#fbbf24' }}>
+                <AlertCircle size={18} /> Duplicate Candidate Detected
+              </h3>
+              <button className="btn btn-secondary" style={{ padding: '8px' }} onClick={() => handleResolveDuplicate('cancel')}>
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <p style={{ fontSize: '14px', lineHeight: '1.6', color: 'var(--text-primary)' }}>
+                Candidate <strong>{duplicateInfo.candidate.name}</strong> ({duplicateInfo.candidate.email || 'no email'}) already exists in the recruitment pipeline.
+              </p>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                What action would you like to perform for the manually uploaded file <strong>{duplicateInfo.fileName}</strong>?
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+                <button 
+                  className="btn btn-primary" 
+                  style={{ justifyContent: 'center', padding: '12px', fontWeight: '600' }} 
+                  onClick={() => handleResolveDuplicate('update')}
+                >
+                  Update (Overwrite Existing Info & CV)
+                </button>
+                <button 
+                  className="btn btn-danger" 
+                  style={{ justifyContent: 'center', padding: '12px', fontWeight: '600' }} 
+                  onClick={() => handleResolveDuplicate('remove')}
+                >
+                  Remove Existing Candidate & Halt Import
+                </button>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ justifyContent: 'center', padding: '12px', fontWeight: '600' }} 
+                  onClick={() => handleResolveDuplicate('cancel')}
+                >
+                  Cancel (Discard Uploaded File)
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
     </div>
   );
 }
