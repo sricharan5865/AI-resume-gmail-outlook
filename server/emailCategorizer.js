@@ -41,7 +41,7 @@ async function callAIProviderForClassification(prompt, systemInstruction) {
     if (isOpenRouter) {
       const url = 'https://openrouter.ai/api/v1/chat/completions';
       const requestBody = {
-        model: process.env.AI_MODEL || 'google/gemini-flash-1.5',
+        model: process.env.AI_MODEL || 'google/gemini-2.5-flash',
         messages: [
           ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
           { role: 'user', content: prompt }
