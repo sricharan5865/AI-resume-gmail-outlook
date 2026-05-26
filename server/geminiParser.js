@@ -40,6 +40,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
       const url = 'https://openrouter.ai/api/v1/chat/completions';
       const requestBody = {
         model: process.env.AI_MODEL || 'google/gemini-2.5-flash',
+        max_tokens: 2000,
         messages: [
           ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
           { role: 'user', content: prompt }
