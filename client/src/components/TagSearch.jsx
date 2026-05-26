@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Tag, X, ChevronRight, Briefcase, Mail } from 'lucide-react';
 
-export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandidate }) {
+export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandidate, rankAccordingToJob }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [activeFilters, setActiveFilters] = useState([]);
@@ -129,7 +129,8 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
   const filteredResults = searchResults.filter(c => {
     if (filterJobId && c.jobId !== filterJobId) return false;
     if (filterStage && c.stage.toLowerCase() !== filterStage.toLowerCase()) return false;
-    if (c.matchScore < minScore) return false;
+    const score = rankAccordingToJob ? c.matchScore : (c.ownCategoryScore ?? c.matchScore);
+    if (score < minScore) return false;
     return true;
   });
 
@@ -414,7 +415,8 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
             ) : (
               filteredResults.map(candidate => {
                 const job = jobs.find(j => j.id === candidate.jobId);
-                const scoreColorClass = candidate.matchScore >= 80 ? 'score-high' : candidate.matchScore >= 50 ? 'score-medium' : 'score-low';
+                const score = rankAccordingToJob ? candidate.matchScore : (candidate.ownCategoryScore ?? candidate.matchScore);
+                const scoreColorClass = score >= 80 ? 'score-high' : score >= 50 ? 'score-medium' : 'score-low';
                 
                 return (
                   <div 
@@ -440,7 +442,7 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
                       </div>
                       <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                         <div className={`score-badge ${scoreColorClass}`} style={{ width: '36px', height: '36px', fontSize: '14px' }}>
-                          {candidate.matchScore}
+                          {score}
                         </div>
                         <button 
                           className="btn btn-secondary" 

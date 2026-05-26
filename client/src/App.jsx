@@ -517,6 +517,7 @@ export default function App() {
               jobs={jobs} 
               backendUrl={BACKEND_URL}
               onSelectCandidate={setSelectedCandidate}
+              rankAccordingToJob={rankAccordingToJob}
             />
           </div>
 
