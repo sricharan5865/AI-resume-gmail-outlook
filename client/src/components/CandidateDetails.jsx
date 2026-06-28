@@ -622,7 +622,7 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
               <iframe 
                 src={
                   (window.localResumeUrls && window.localResumeUrls[candidate.id]) 
-                    ? window.localResumeUrls[candidate.id] 
+                    ? `${window.localResumeUrls[candidate.id]}#toolbar=0`
                     : `${backendUrl}${candidate.resumeUrl}#toolbar=0`
                 } 
                 className="pdf-viewer" 
