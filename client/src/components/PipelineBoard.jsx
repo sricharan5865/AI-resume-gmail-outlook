@@ -226,6 +226,7 @@ export default function PipelineBoard({
                   pdfText: errData.pdfText,
                   jobId: errData.jobId,
                   fileName: file.name,
+                  fileObject: file,
                   logId: errData.logId || logId
                 });
                 continue;
@@ -236,6 +237,10 @@ export default function PipelineBoard({
           }
 
           const newCandidate = await res.json();
+          if (newCandidate && newCandidate.id) {
+            window.localResumeUrls = window.localResumeUrls || {};
+            window.localResumeUrls[newCandidate.id] = URL.createObjectURL(file);
+          }
           onManualUpload(newCandidate);
           successes.push(file.name);
         } catch (err) {
@@ -295,10 +300,18 @@ export default function PipelineBoard({
 
       const data = await res.json();
       if (action === 'update') {
+        if (data && data.id && currentDuplicate.fileObject) {
+          window.localResumeUrls = window.localResumeUrls || {};
+          window.localResumeUrls[data.id] = URL.createObjectURL(currentDuplicate.fileObject);
+        }
         onManualUpload(data, true);
       } else if (action === 'remove') {
         onCandidateDeleted(currentDuplicate.candidate.id);
       } else if (action === 'delete-before') {
+        if (data && data.id && currentDuplicate.fileObject) {
+          window.localResumeUrls = window.localResumeUrls || {};
+          window.localResumeUrls[data.id] = URL.createObjectURL(currentDuplicate.fileObject);
+        }
         onCandidateDeleted(currentDuplicate.candidate.id);
         onManualUpload(data);
       }

@@ -4,10 +4,12 @@ import { X, Briefcase, Mail, Phone, GraduationCap, Building2, Calendar, Sparkles
 export default function CandidateDetails({ candidate, job, onClose, onOpenEmailModal, onStageChanged, onCandidateDeleted, backendUrl, rankAccordingToJob, currentRole }) {
   if (!candidate) return null;
 
-  const [rightTab, setRightTab] = useState(candidate.resumeUrl ? 'pdf' : 'text');
+  const hasPdf = candidate.resumeUrl || (window.localResumeUrls && window.localResumeUrls[candidate.id]);
+  const [rightTab, setRightTab] = useState(hasPdf ? 'pdf' : 'text');
 
   useEffect(() => {
-    setRightTab(candidate.resumeUrl ? 'pdf' : 'text');
+    const hasPdfNow = candidate.resumeUrl || (window.localResumeUrls && window.localResumeUrls[candidate.id]);
+    setRightTab(hasPdfNow ? 'pdf' : 'text');
   }, [candidate.id, candidate.resumeUrl]);
 
   // Helper to parse date strings (e.g. "Sep 2024", "Present")
@@ -592,7 +594,7 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
                 color: rightTab === 'pdf' ? 'var(--text-primary)' : 'var(--text-secondary)'
               }}
               onClick={() => setRightTab('pdf')}
-              disabled={!candidate.resumeUrl}
+              disabled={!candidate.resumeUrl && !(window.localResumeUrls && window.localResumeUrls[candidate.id])}
             >
               PDF Resume
             </button>
@@ -616,9 +618,13 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
 
           {/* Tab Body */}
           <div style={{ flexGrow: 1, overflow: 'hidden', height: '100%' }}>
-            {rightTab === 'pdf' && candidate.resumeUrl ? (
+            {rightTab === 'pdf' && (candidate.resumeUrl || (window.localResumeUrls && window.localResumeUrls[candidate.id])) ? (
               <iframe 
-                src={`${backendUrl}${candidate.resumeUrl}#toolbar=0`} 
+                src={
+                  (window.localResumeUrls && window.localResumeUrls[candidate.id]) 
+                    ? window.localResumeUrls[candidate.id] 
+                    : `${backendUrl}${candidate.resumeUrl}#toolbar=0`
+                } 
                 className="pdf-viewer" 
                 title="Resume PDF Viewer"
               />
