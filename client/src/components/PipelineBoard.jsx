@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
-import { Briefcase, MapPin, Sparkles, Eye, Mail, Upload, FileText, Plus, Loader, Filter, Trash2, Search, AlertCircle, X } from 'lucide-react';
+import { Briefcase, MapPin, Sparkles, Eye, Mail, Upload, FileText, Plus, Loader, Filter, Trash2, Search, AlertCircle, X, FileSpreadsheet, Calendar } from 'lucide-react';
+import { exportToCSV } from '../utils/export';
+import { getCandidateDate, matchDateRangeHelper } from '../utils/dateFilters';
+
 
 const STAGES = ['Inbox', 'Shortlist', 'Interview', 'Offered', 'Rejected'];
 
@@ -15,12 +18,42 @@ export default function PipelineBoard({
   rankAccordingToJob
 }) {
   const [selectedFilterJobId, setSelectedFilterJobId] = useState('');
-  const [uploadJobId, setUploadJobId] = useState('');
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
   const [draggedCandidateId, setDraggedCandidateId] = useState(null);
   const [activeDragStage, setActiveDragStage] = useState(null);
-  const [duplicateInfo, setDuplicateInfo] = useState(null);
+  const [duplicatesQueue, setDuplicatesQueue] = useState([]);
+  const [filterDateRange, setFilterDateRange] = useState('');
+
+  const handleExport = () => {
+    const headers = {
+      name: 'Name',
+      email: 'Email',
+      phone: 'Phone',
+      linkedinUrl: 'LinkedIn URL',
+      jobId: 'Job Position',
+      stage: 'Current Stage',
+      matchScore: 'Job Match Score',
+      ownCategoryScore: 'Competency Score',
+      skills: 'Skills',
+      experience: 'Work Experience',
+      education: 'Education',
+      createdAt: 'Import Date'
+    };
+    
+    const dataToExport = sortedCandidates.map(c => {
+      const job = jobs.find(j => j.id === c.jobId);
+      return {
+        ...c,
+        jobId: job ? job.title : 'General Role'
+      };
+    });
+    
+    const job = jobs.find(j => j.id === selectedFilterJobId);
+    const fileName = job ? `candidates_${job.title.replace(/\s+/g, '_').toLowerCase()}` : 'all_candidates_pipeline';
+    
+    exportToCSV(dataToExport, fileName, headers);
+  };
 
   // Sorting state
   const [sortBy, setSortBy] = useState('score-desc');
@@ -35,23 +68,25 @@ export default function PipelineBoard({
     return rankAccordingToJob ? c.matchScore : (c.ownCategoryScore ?? c.matchScore);
   };
 
-  // Filter candidates by Job ID
-  const filteredCandidates = selectedFilterJobId
-    ? candidates.filter(c => c.jobId === selectedFilterJobId)
-    : candidates;
+  // Filter candidates by Job ID & Date
+  const filteredCandidates = candidates.filter(c => {
+    if (selectedFilterJobId && c.jobId !== selectedFilterJobId) return false;
+    if (filterDateRange && !matchDateRangeHelper(getCandidateDate(c), filterDateRange)) return false;
+    return true;
+  });
 
   // Sort candidates by score or date of submission
   const sortedCandidates = [...filteredCandidates].sort((a, b) => {
     if (sortBy === 'score-desc') return getCandidateScore(b) - getCandidateScore(a);
     if (sortBy === 'score-asc') return getCandidateScore(a) - getCandidateScore(b);
     if (sortBy === 'date-desc') {
-      const dateA = new Date(a.createdAt || a.id.replace('candidate-', ''));
-      const dateB = new Date(b.createdAt || b.id.replace('candidate-', ''));
+      const dateA = getCandidateDate(a);
+      const dateB = getCandidateDate(b);
       return dateB - dateA;
     }
     if (sortBy === 'date-asc') {
-      const dateA = new Date(a.createdAt || a.id.replace('candidate-', ''));
-      const dateB = new Date(b.createdAt || b.id.replace('candidate-', ''));
+      const dateA = getCandidateDate(a);
+      const dateB = getCandidateDate(b);
       return dateA - dateB;
     }
     return 0;
@@ -96,20 +131,31 @@ export default function PipelineBoard({
     setActiveDragStage(null);
     if (!candidateId) return;
 
+    const candidate = candidates.find(c => c.id === candidateId);
+    const oldStage = candidate ? candidate.stage : null;
+
     try {
       // Optimistic state update in parent
       onStageChanged(candidateId, stage);
       
       // Update backend
-      await fetch(`${backendUrl}/api/candidates/${candidateId}/stage`, {
+      const res = await fetch(`${backendUrl}/api/candidates/${candidateId}/stage`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ stage })
       });
-    } catch (e) {
-      console.error('Failed to update stage on backend:', e);
+
+      if (!res.ok) {
+        throw new Error('Server rejected stage update');
+      }
+    } catch (err) {
+      console.error('Failed to update stage on backend:', err);
+      if (oldStage) {
+        onStageChanged(candidateId, oldStage);
+        alert(`Failed to update candidate stage on server. Reverting to original stage.`);
+      }
     } finally {
       setDraggedCandidateId(null);
     }
@@ -124,7 +170,27 @@ export default function PipelineBoard({
       setUploadingFile(true);
       const successes = [];
       const failures = [];
+      const localDuplicates = [];
 
+      // Step 1: Pre-register all logs on backend
+      setUploadProgress('Pre-registering upload queue...');
+      let registeredLogs = [];
+      try {
+        const filesData = files.map(f => ({ fileName: f.name, source: 'manual' }));
+        const preRegRes = await fetch(`${backendUrl}/api/ingestion-logs/pre-register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: filesData })
+        });
+        if (preRegRes.ok) {
+          const preRegData = await preRegRes.json();
+          registeredLogs = preRegData.logs || [];
+        }
+      } catch (preRegErr) {
+        console.error('Pre-registration of ingestion logs failed:', preRegErr);
+      }
+
+      // Step 2: Loop & Upload files sequentially
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (files.length > 1) {
@@ -133,11 +199,14 @@ export default function PipelineBoard({
           setUploadProgress('Uploading...');
         }
 
+        const matchingLog = registeredLogs[i];
+        const logId = matchingLog ? matchingLog.id : null;
+
         try {
           const formData = new FormData();
           formData.append('resume', file);
-          if (uploadJobId) {
-            formData.append('jobId', uploadJobId);
+          if (logId) {
+            formData.append('logId', logId);
           }
 
           const res = await fetch(`${backendUrl}/api/candidates/upload`, {
@@ -150,15 +219,16 @@ export default function PipelineBoard({
             try {
               const errData = await res.json();
               if (res.status === 409 && errData.duplicate) {
-                setDuplicateInfo({
+                localDuplicates.push({
                   candidate: errData.candidate,
                   tempFile: errData.tempFile,
                   parsedData: errData.parsedData,
                   pdfText: errData.pdfText,
                   jobId: errData.jobId,
-                  fileName: file.name
+                  fileName: file.name,
+                  logId: errData.logId || logId
                 });
-                break;
+                continue;
               }
               errMsg = errData.error || errMsg;
             } catch (jsonErr) {}
@@ -174,8 +244,10 @@ export default function PipelineBoard({
         }
       }
 
-      if (duplicateInfo) {
-        // If upload stopped due to duplicate, don't show general success alerts yet
+      // Set state for user resolution
+      if (localDuplicates.length > 0) {
+        setDuplicatesQueue(localDuplicates);
+        alert(`Upload loop completed.\n\nSuccessfully processed: ${successes.length} resume(s).\nDuplicates detected: ${localDuplicates.length} resume(s) (Please resolve them in the next prompts).\nFailed: ${failures.length} resume(s).\n\n${failures.length > 0 ? `Errors:\n${failures.join('\n')}` : ''}`);
       } else if (failures.length > 0) {
         alert(`Upload complete!\nSuccessfully processed: ${successes.length} resume(s).\nFailed: ${failures.length} resume(s).\n\nErrors:\n${failures.join('\n')}`);
       } else {
@@ -194,7 +266,8 @@ export default function PipelineBoard({
   };
 
   const handleResolveDuplicate = async (action) => {
-    if (!duplicateInfo) return;
+    if (duplicatesQueue.length === 0) return;
+    const currentDuplicate = duplicatesQueue[0];
     
     try {
       setUploadingFile(true);
@@ -206,11 +279,12 @@ export default function PipelineBoard({
         },
         body: JSON.stringify({
           action,
-          candidateId: duplicateInfo.candidate.id,
-          tempFile: duplicateInfo.tempFile,
-          parsedData: duplicateInfo.parsedData,
-          pdfText: duplicateInfo.pdfText,
-          jobId: duplicateInfo.jobId
+          candidateId: currentDuplicate.candidate.id,
+          tempFile: currentDuplicate.tempFile,
+          parsedData: currentDuplicate.parsedData,
+          pdfText: currentDuplicate.pdfText,
+          jobId: currentDuplicate.jobId,
+          logId: currentDuplicate.logId
         })
       });
 
@@ -223,7 +297,10 @@ export default function PipelineBoard({
       if (action === 'update') {
         onManualUpload(data, true);
       } else if (action === 'remove') {
-        onCandidateDeleted(duplicateInfo.candidate.id);
+        onCandidateDeleted(currentDuplicate.candidate.id);
+      } else if (action === 'delete-before') {
+        onCandidateDeleted(currentDuplicate.candidate.id);
+        onManualUpload(data);
       }
     } catch (err) {
       console.error(err);
@@ -231,9 +308,11 @@ export default function PipelineBoard({
     } finally {
       setUploadingFile(false);
       setUploadProgress('');
-      setDuplicateInfo(null);
+      setDuplicatesQueue(prev => prev.slice(1));
     }
   };
+
+  const duplicateInfo = duplicatesQueue[0];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', overflow: 'hidden' }}>
@@ -261,6 +340,33 @@ export default function PipelineBoard({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '14px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Calendar size={16} /> Date Filter:
+            </span>
+            <select 
+              className="form-input" 
+              style={{ width: '165px', padding: '6px 12px', fontSize: '13px' }}
+              value={filterDateRange}
+              onChange={(e) => setFilterDateRange(e.target.value)}
+            >
+              <option value="">All Time</option>
+              <option value="last-24h">Last 24 Hours</option>
+              <option value="last-1w">Within 1 Week</option>
+              <option value="last-2w">Within 2 Weeks</option>
+              <option value="last-1m">Within 1 Month</option>
+              <option value="last-3m">Within 3 Months</option>
+              <option value="last-6m">Within 6 Months</option>
+              <option value="last-1y">Within 1 Year</option>
+              <option value="before-1w">Before 1 Week</option>
+              <option value="before-2w">Before 2 Weeks</option>
+              <option value="before-1m">Before 1 Month</option>
+              <option value="before-3m">Before 3 Months</option>
+              <option value="before-6m">Before 6 Months</option>
+              <option value="before-1y">Before 1 Year</option>
+            </select>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
               Sort:
             </span>
@@ -276,6 +382,17 @@ export default function PipelineBoard({
               <option value="date-asc">Date: Oldest First</option>
             </select>
           </div>
+
+          {sortedCandidates.length > 0 && (
+            <button 
+              className="btn btn-secondary" 
+              style={{ padding: '6px 12px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', minHeight: '36px' }}
+              onClick={handleExport}
+              title="Export filtered candidates list to Excel"
+            >
+              <FileSpreadsheet size={14} /> Export to Excel
+            </button>
+          )}
         </div>
 
         {/* Upload Resume Direct Portal */}
@@ -283,17 +400,6 @@ export default function PipelineBoard({
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
             Manual Import:
           </span>
-          <select 
-            className="form-input" 
-            style={{ width: '180px', padding: '6px 12px', fontSize: '13px' }}
-            value={uploadJobId}
-            onChange={(e) => setUploadJobId(e.target.value)}
-          >
-            <option value="">-- Choose Job --</option>
-            {jobs.map(job => (
-              <option key={job.id} value={job.id}>{job.title}</option>
-            ))}
-          </select>
           
           <label 
             className="btn btn-secondary"
@@ -700,11 +806,18 @@ export default function PipelineBoard({
                   Update (Overwrite Existing Info & CV)
                 </button>
                 <button 
+                  className="btn" 
+                  style={{ justifyContent: 'center', padding: '12px', fontWeight: '600', backgroundColor: '#d97706', color: '#ffffff' }} 
+                  onClick={() => handleResolveDuplicate('delete-before')}
+                >
+                  Delete Existing & Import New
+                </button>
+                <button 
                   className="btn btn-danger" 
                   style={{ justifyContent: 'center', padding: '12px', fontWeight: '600' }} 
                   onClick={() => handleResolveDuplicate('remove')}
                 >
-                  Remove Existing Candidate & Halt Import
+                  Delete Existing Only (Halt Import)
                 </button>
                 <button 
                   className="btn btn-secondary" 

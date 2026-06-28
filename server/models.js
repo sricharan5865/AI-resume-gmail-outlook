@@ -42,6 +42,20 @@ const candidateSchema = new mongoose.Schema({
   ownCategoryMissingSkills: [String],
   ownCategoryExplanation: { type: String },
   comments: { type: String },
+  seniorityLevel: { type: String, default: 'Mid' },
+  interviewQuestions: [String],
+  hrQuestions: [
+    {
+      question: String,
+      answer: String
+    }
+  ],
+  technicalQuestions: [
+    {
+      question: String,
+      answer: String
+    }
+  ],
   createdAt: { type: Date, default: Date.now },
   history: [
     {
@@ -59,7 +73,13 @@ const jobSchema = new mongoose.Schema({
   location: { type: String, default: 'Remote' },
   status: { type: String, default: 'Active' },
   description: { type: String },
-  requirements: { type: String }
+  requirements: { type: String },
+  postings: {
+    linkedIn: { type: Boolean, default: false },
+    indeed: { type: Boolean, default: false },
+    zipRecruiter: { type: Boolean, default: false },
+    internalCareer: { type: Boolean, default: false }
+  }
 });
 
 const settingsSchema = new mongoose.Schema({
@@ -102,8 +122,39 @@ const emailLogSchema = new mongoose.Schema({
   emailId: { type: String, default: '' }
 });
 
+const ingestionLogSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  fileName: { type: String, required: true },
+  source: { type: String, enum: ['manual', 'gmail', 'outlook'], default: 'manual' },
+  status: { type: String, enum: ['processing', 'success', 'failed', 'duplicate', 'cancelled'], default: 'processing' },
+  error: { type: String, default: '' },
+  candidateId: { type: String, default: '' },
+  candidateName: { type: String, default: '' },
+  extractedData: { type: mongoose.Schema.Types.Mixed, default: null },
+  timestamp: { type: Date, default: Date.now }
+});
+
+const resumeChunkSchema = new mongoose.Schema({
+  chunkId: { type: String, required: true, unique: true },
+  candidateId: { type: String, required: true, index: true },
+  section: { type: String, required: true, enum: ['contact', 'skills', 'experience', 'education', 'summary', 'tags'] },
+  text: { type: String, required: true },
+  embedding: { type: [Number], required: true },
+  metadata: {
+    name: String,
+    company: String,
+    role: String,
+    seniority: String
+  }
+}, { timestamps: true });
+
+resumeChunkSchema.index({ candidateId: 1, section: 1 });
+
 export const Candidate = mongoose.model('Candidate', candidateSchema);
 export const Job = mongoose.model('Job', jobSchema);
 export const Settings = mongoose.model('Settings', settingsSchema);
 export const ProcessedEmail = mongoose.model('ProcessedEmail', processedEmailSchema);
 export const EmailLog = mongoose.model('EmailLog', emailLogSchema);
+export const IngestionLog = mongoose.model('IngestionLog', ingestionLogSchema);
+export const ResumeChunk = mongoose.model('ResumeChunk', resumeChunkSchema);
+

@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Tag, X, ChevronRight, Briefcase, Mail } from 'lucide-react';
+import { Search, Tag, X, ChevronRight, Briefcase, Mail, Calendar, FileSpreadsheet } from 'lucide-react';
+import { exportToCSV } from '../utils/export';
+import { getCandidateDate, matchDateRangeHelper } from '../utils/dateFilters';
+
 
 export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandidate, rankAccordingToJob }) {
   const [searchQuery, setSearchQuery] = useState('');
@@ -13,8 +16,36 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
   const [filterJobId, setFilterJobId] = useState('');
   const [filterStage, setFilterStage] = useState('');
   const [minScore, setMinScore] = useState(0);
+  const [filterDateRange, setFilterDateRange] = useState('');
   
   const searchInputRef = useRef(null);
+
+  const handleExport = () => {
+    const headers = {
+      name: 'Name',
+      email: 'Email',
+      phone: 'Phone',
+      linkedinUrl: 'LinkedIn URL',
+      jobId: 'Job Context',
+      stage: 'Current Stage',
+      matchScore: 'Job Match Score',
+      ownCategoryScore: 'Competency Score',
+      skills: 'Skills',
+      experience: 'Work Experience',
+      education: 'Education',
+      createdAt: 'Import Date'
+    };
+    
+    const dataToExport = filteredResults.map(c => {
+      const job = jobs.find(j => j.id === c.jobId);
+      return {
+        ...c,
+        jobId: job ? job.title : 'General Role'
+      };
+    });
+    
+    exportToCSV(dataToExport, 'candidate_search_results', headers);
+  };
 
   // Fetch tag cloud on load
   useEffect(() => {
@@ -131,6 +162,7 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
     if (filterStage && c.stage.toLowerCase() !== filterStage.toLowerCase()) return false;
     const score = rankAccordingToJob ? c.matchScore : (c.ownCategoryScore ?? c.matchScore);
     if (score < minScore) return false;
+    if (filterDateRange && !matchDateRangeHelper(getCandidateDate(c), filterDateRange)) return false;
     return true;
   });
 
@@ -295,16 +327,28 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
         {/* Right Column: Search Results */}
         <div className="glass" style={{ padding: '24px', borderRadius: 'var(--radius-lg)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
-            <h3 style={{ fontSize: '18px' }}>
-              Results {filteredResults.length > 0 && <span style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: 'normal' }}>({filteredResults.length} found)</span>}
-            </h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <h3 style={{ fontSize: '18px', margin: 0 }}>
+                Results {filteredResults.length > 0 && <span style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: 'normal' }}>({filteredResults.length} found)</span>}
+              </h3>
+              {filteredResults.length > 0 && (
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ padding: '4px 8px', fontSize: '11px', minHeight: '28px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  onClick={handleExport}
+                  title="Export results to Excel sheet"
+                >
+                  <FileSpreadsheet size={12} /> Export to Excel
+                </button>
+              )}
+            </div>
 
             {/* Filter controls */}
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
               {/* Job filter dropdown */}
               <select 
                 className="form-input" 
-                style={{ width: '130px', padding: '4px 8px', fontSize: '12px' }}
+                style={{ width: '110px', padding: '4px 8px', fontSize: '12px' }}
                 value={filterJobId}
                 onChange={(e) => setFilterJobId(e.target.value)}
               >
@@ -317,7 +361,7 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
               {/* Stage filter dropdown */}
               <select 
                 className="form-input" 
-                style={{ width: '110px', padding: '4px 8px', fontSize: '12px' }}
+                style={{ width: '100px', padding: '4px 8px', fontSize: '12px' }}
                 value={filterStage}
                 onChange={(e) => setFilterStage(e.target.value)}
               >
@@ -327,6 +371,29 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
                 <option value="Interview">Interview</option>
                 <option value="Offered">Offered</option>
                 <option value="Rejected">Rejected</option>
+              </select>
+
+              {/* Date timeframe filter dropdown */}
+              <select 
+                className="form-input" 
+                style={{ width: '135px', padding: '4px 8px', fontSize: '12px' }}
+                value={filterDateRange}
+                onChange={(e) => setFilterDateRange(e.target.value)}
+              >
+                <option value="">All Time</option>
+                <option value="last-24h">Last 24 Hours</option>
+                <option value="last-1w">Within 1 Week</option>
+                <option value="last-2w">Within 2 Weeks</option>
+                <option value="last-1m">Within 1 Month</option>
+                <option value="last-3m">Within 3 Months</option>
+                <option value="last-6m">Within 6 Months</option>
+                <option value="last-1y">Within 1 Year</option>
+                <option value="before-1w">Before 1 Week</option>
+                <option value="before-2w">Before 2 Weeks</option>
+                <option value="before-1m">Before 1 Month</option>
+                <option value="before-3m">Before 3 Months</option>
+                <option value="before-6m">Before 6 Months</option>
+                <option value="before-1y">Before 1 Year</option>
               </select>
 
               {/* Min score input */}
@@ -345,7 +412,7 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
               </div>
 
               {/* Clear filters button */}
-              {(filterJobId || filterStage || minScore > 0) && (
+              {(filterJobId || filterStage || minScore > 0 || filterDateRange) && (
                 <button 
                   className="btn btn-secondary" 
                   style={{ padding: '4px 8px', fontSize: '11px', minHeight: '28px' }}
@@ -353,6 +420,7 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
                     setFilterJobId('');
                     setFilterStage('');
                     setMinScore(0);
+                    setFilterDateRange('');
                   }}
                 >
                   Clear
@@ -435,9 +503,13 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                       <div>
                         <h4 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '4px' }}>{candidate.name}</h4>
-                        <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                        <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
                           <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><Briefcase size={12} /> {job ? job.title : 'General'}</span>
                           <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><Mail size={12} /> {candidate.email || 'N/A'}</span>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <Calendar size={12} />
+                            Imported: {candidate.createdAt ? new Date(candidate.createdAt).toLocaleDateString() : 'N/A'}
+                          </span>
                         </div>
                       </div>
                       <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>

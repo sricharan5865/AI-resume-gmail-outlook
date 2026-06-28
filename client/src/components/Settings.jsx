@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Shield, Briefcase, Mail, Plus, Trash2, Info, AlertTriangle, Tag } from 'lucide-react';
 
-export default function SettingsView({ jobs, templates, onJobCreated, onJobDeleted, onTemplatesUpdated, onSettingsSaved, backendUrl }) {
+export default function SettingsView({ jobs, templates, onJobCreated, onJobDeleted, onJobUpdated, onSettingsSaved, backendUrl, currentRole }) {
   const [activeSubTab, setActiveSubTab] = useState('jobs');
 
   // New Job Form State
@@ -36,6 +36,8 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
   const [geminiConfigured, setGeminiConfigured] = useState(false);
   const [openaiConfigured, setOpenaiConfigured] = useState(false);
   const [claudeConfigured, setClaudeConfigured] = useState(false);
+  const [generatingJD, setGeneratingJD] = useState(false);
+  const [jdKeywords, setJdKeywords] = useState('');
 
   // Outlook configuration state
   const [outlookClientId, setOutlookClientId] = useState('');
@@ -172,6 +174,60 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
       onJobDeleted(id);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleGenerateJD = async () => {
+    if (!jobTitle) {
+      alert('Please enter a Job Title first.');
+      return;
+    }
+    setGeneratingJD(true);
+    try {
+      const res = await fetch(`${backendUrl}/api/jobs/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          title: jobTitle,
+          department: jobDept,
+          location: jobLoc,
+          skills: jdKeywords
+        })
+      });
+      if (!res.ok) throw new Error('AI Generation failed');
+      const data = await res.json();
+      setJobDesc(data.description || '');
+      setJobReqs(data.requirements || '');
+    } catch (e) {
+      console.error(e);
+      alert('Failed to generate Job Description with AI.');
+    } finally {
+      setGeneratingJD(false);
+    }
+  };
+
+  const handleTogglePosting = async (job, platform) => {
+    const currentPostings = job.postings || { linkedIn: false, indeed: false, zipRecruiter: false, internalCareer: false };
+    const updatedPostings = {
+      ...currentPostings,
+      [platform]: !currentPostings[platform]
+    };
+    try {
+      const res = await fetch(`${backendUrl}/api/jobs/${job.id}/postings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ postings: updatedPostings })
+      });
+      if (!res.ok) throw new Error('Failed to update postings');
+      const updatedJob = await res.json();
+      onJobUpdated(updatedJob);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to update posting status.');
     }
   };
 
@@ -390,7 +446,7 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
             </div>
 
             {/* List active jobs */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <h4 style={{ fontSize: '15px', color: 'var(--text-secondary)' }}>Active Positions ({jobs.length})</h4>
               {jobs.length === 0 ? (
                 <div style={{ padding: '16px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', textAlign: 'center', color: 'var(--text-muted)' }}>
@@ -398,48 +454,104 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
                 </div>
               ) : (
                 jobs.map(job => (
-                  <div key={job.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', background: 'var(--bg-secondary)', border: '1px solid var(--glass-border)', borderRadius: 'var(--radius-md)' }}>
-                    <div>
-                      <h4 style={{ fontSize: '14px', fontWeight: '600' }}>{job.title}</h4>
-                      <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{job.department} • {job.location}</p>
+                  <div key={job.id} style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '20px', background: 'var(--bg-secondary)', border: '1px solid var(--glass-border)', borderRadius: 'var(--radius-md)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <h4 style={{ fontSize: '15px', fontWeight: '600' }}>{job.title}</h4>
+                        <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{job.department} • {job.location}</p>
+                      </div>
+                      {currentRole !== 'Hiring Manager' && (
+                        <button className="btn btn-danger" style={{ padding: '6px' }} onClick={() => handleDeleteJob(job.id)}>
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
-                    <button className="btn btn-danger" style={{ padding: '6px' }} onClick={() => handleDeleteJob(job.id)}>
-                      <Trash2 size={14} />
-                    </button>
+                    
+                    {/* Distribution Hub Switchers */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', borderTop: '1px dashed var(--glass-border)', paddingTop: '12px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', width: '100%', textTransform: 'uppercase', marginBottom: '4px' }}>Simulated External Portal Distribution</span>
+                      
+                      {[
+                        { key: 'linkedIn', label: 'LinkedIn', color: '#0077b5' },
+                        { key: 'indeed', label: 'Indeed', color: '#003a9b' },
+                        { key: 'zipRecruiter', label: 'ZipRecruiter', color: '#00b388' },
+                        { key: 'internalCareer', label: 'Internal Career Site', color: 'var(--accent-primary)' }
+                      ].map(platform => {
+                        const isPosted = job.postings?.[platform.key] || false;
+                        return (
+                          <button
+                            key={platform.key}
+                            type="button"
+                            onClick={() => currentRole !== 'Hiring Manager' && handleTogglePosting(job, platform.key)}
+                            disabled={currentRole === 'Hiring Manager'}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              padding: '4px 10px',
+                              borderRadius: '4px',
+                              fontSize: '11px',
+                              fontWeight: '600',
+                              cursor: currentRole === 'Hiring Manager' ? 'default' : 'pointer',
+                              border: `1px solid ${isPosted ? platform.color : 'var(--glass-border)'}`,
+                              background: isPosted ? 'rgba(16, 185, 129, 0.08)' : 'transparent',
+                              color: isPosted ? 'var(--status-offered)' : 'var(--text-secondary)',
+                              transition: 'all 0.2s'
+                            }}
+                          >
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: isPosted ? 'var(--status-offered)' : 'var(--text-muted)' }}></span>
+                            {platform.label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 ))
               )}
             </div>
 
             {/* Add Job Form */}
-            <form onSubmit={handleCreateJob} style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <h4 style={{ fontSize: '15px' }}>Add New Position</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+            {currentRole !== 'Hiring Manager' && (
+              <form onSubmit={handleCreateJob} style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <h4 style={{ fontSize: '15px' }}>Add New Position</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+                  <div className="form-group">
+                    <label className="form-label">Job Title*</label>
+                    <input type="text" className="form-input" placeholder="e.g. Node Backend Engineer" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Department</label>
+                    <input type="text" className="form-input" placeholder="e.g. Engineering" value={jobDept} onChange={(e) => setJobDept(e.target.value)} />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Location</label>
+                    <input type="text" className="form-input" placeholder="e.g. Remote / Hyderabad" value={jobLoc} onChange={(e) => setJobLoc(e.target.value)} />
+                  </div>
+                </div>
+                
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: 'var(--radius-md)', border: '1px solid var(--glass-border)' }}>
+                  <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                    <label className="form-label">AI Generator Keywords / Core Skills</label>
+                    <input type="text" className="form-input" placeholder="e.g. 5 years Experience, Microservices, AWS" value={jdKeywords} onChange={(e) => setJdKeywords(e.target.value)} />
+                  </div>
+                  <button type="button" className="btn btn-secondary" onClick={handleGenerateJD} disabled={generatingJD} style={{ height: '38px', padding: '0 20px' }}>
+                    {generatingJD ? 'Generating...' : 'Generate JD with AI'}
+                  </button>
+                </div>
+
                 <div className="form-group">
-                  <label className="form-label">Job Title*</label>
-                  <input type="text" className="form-input" placeholder="e.g. Node Backend Engineer" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} />
+                  <label className="form-label">Job Description Summary*</label>
+                  <textarea className="form-input" rows={3} placeholder="Describe the role responsibilities..." value={jobDesc} onChange={(e) => setJobDesc(e.target.value)} />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Department</label>
-                  <input type="text" className="form-input" placeholder="e.g. Engineering" value={jobDept} onChange={(e) => setJobDept(e.target.value)} />
+                  <label className="form-label">Requirements Criteria* (One per line or comma-separated)</label>
+                  <textarea className="form-input" rows={4} placeholder="e.g. React.js, Node.js, 3+ years of experience, Docker, AWS..." value={jobReqs} onChange={(e) => setJobReqs(e.target.value)} />
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Location</label>
-                  <input type="text" className="form-input" placeholder="e.g. Remote / Hyderabad" value={jobLoc} onChange={(e) => setJobLoc(e.target.value)} />
-                </div>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Job Description Summary*</label>
-                <textarea className="form-input" rows={3} placeholder="Describe the role responsibilities..." value={jobDesc} onChange={(e) => setJobDesc(e.target.value)} />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Requirements Criteria* (One per line or comma-separated)</label>
-                <textarea className="form-input" rows={4} placeholder="e.g. React.js, Node.js, 3+ years of experience, Docker, AWS..." value={jobReqs} onChange={(e) => setJobReqs(e.target.value)} />
-              </div>
-              <button type="submit" className="btn btn-primary" style={{ alignSelf: 'flex-start' }}>
-                <Plus size={14} /> Add Position
-              </button>
-            </form>
+                <button type="submit" className="btn btn-primary" style={{ alignSelf: 'flex-start' }}>
+                  <Plus size={14} /> Add Position
+                </button>
+              </form>
+            )}
           </div>
         )}
 
@@ -565,6 +677,13 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
                 Toggle automated sourcing agents and configure external channels (Gmail) and AI engines (Gemini, Claude, OpenAI).
               </p>
             </div>
+
+            {currentRole !== 'Admin' && (
+              <div className="glass" style={{ padding: '16px', background: 'rgba(244, 63, 94, 0.08)', borderRadius: 'var(--radius-md)', border: '1px solid rgba(244, 63, 94, 0.2)', color: 'var(--status-rejected)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <AlertTriangle size={16} />
+                <span><strong>Access Restricted:</strong> Only Administrators can view or modify API keys and channel credentials.</span>
+              </div>
+            )}
 
             {/* Sourcing Agent Status Toggle */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-secondary)', padding: '16px', borderRadius: 'var(--radius-md)', border: '1px solid var(--glass-border)' }}>
@@ -933,7 +1052,7 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
               )}
             </div>
 
-            <button type="submit" className="btn btn-primary" style={{ alignSelf: 'flex-start', padding: '12px 24px' }} disabled={savingSettings}>
+            <button type="submit" className="btn btn-primary" style={{ alignSelf: 'flex-start', padding: '12px 24px' }} disabled={savingSettings || currentRole !== 'Admin'}>
               {savingSettings ? 'Saving Settings...' : 'Save Configuration'}
             </button>
           </form>

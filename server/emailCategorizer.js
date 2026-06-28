@@ -61,12 +61,12 @@ async function callAIProviderForClassification(prompt, systemInstruction) {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
+        throw new Error(`Gemini AI API error: ${response.status} - ${errorText}`);
       }
 
       const result = await response.json();
       const text = result.choices?.[0]?.message?.content;
-      if (!text) throw new Error('OpenRouter API returned an empty response.');
+      if (!text) throw new Error('Gemini AI API returned an empty response.');
       return JSON.parse(cleanJsonResponse(text));
     } else {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;

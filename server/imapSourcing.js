@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
+import { ProcessedEmail } from './models.js';
 
 /**
  * Connects to Gmail IMAP and retrieves unread emails containing PDF attachments.
@@ -62,6 +63,13 @@ export async function fetchIMAPEmails(config) {
       uids = uids.slice(-20);
       
       for (const uid of uids) {
+        const uidStr = uid.toString();
+        // Check if this UID has already been processed or checked
+        const alreadyProcessed = await ProcessedEmail.exists({ messageId: uidStr });
+        if (alreadyProcessed) {
+          continue;
+        }
+
         // Fetch raw email source stream
         const rawSource = await client.download(uid);
         const parsedMail = await simpleParser(rawSource.content);
@@ -80,7 +88,7 @@ export async function fetchIMAPEmails(config) {
         // Only include emails that have PDF attachments (just like the python project)
         if (pdfAttachments.length > 0) {
           emailsList.push({
-            id: uid.toString(),
+            id: uidStr,
             subject: parsedMail.subject || '(No Subject)',
             from: parsedMail.from?.text || 'Unknown Sender',
             date: parsedMail.date ? parsedMail.date.toISOString() : new Date().toISOString(),
@@ -88,6 +96,10 @@ export async function fetchIMAPEmails(config) {
             body: parsedMail.text || parsedMail.html || '',
             attachments: pdfAttachments
           });
+        } else {
+          // If the email has no PDF attachment, mark it as processed immediately 
+          // so we don't waste connection bandwidth/time downloading it again on next check.
+          await ProcessedEmail.create({ messageId: uidStr }).catch(() => {});
         }
       }
     } finally {

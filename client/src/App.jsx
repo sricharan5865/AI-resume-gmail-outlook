@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { LayoutDashboard, Mail, GitCommit, Settings, CheckCircle2, AlertCircle, RefreshCw, Search, Sun, Moon } from 'lucide-react';
+import { LayoutDashboard, Mail, GitCommit, Settings, CheckCircle2, AlertCircle, RefreshCw, Search, Sun, Moon, ClipboardList, BarChart3, Sparkles } from 'lucide-react';
 
 import Dashboard from './components/Dashboard';
 import Inbox from './components/Inbox';
@@ -7,7 +7,9 @@ import PipelineBoard from './components/PipelineBoard';
 import CandidateDetails from './components/CandidateDetails';
 import EmailModal from './components/EmailModal';
 import SettingsView from './components/Settings';
-import TagSearch from './components/TagSearch';
+import IngestionTracker from './components/IngestionTracker';
+import Reporting from './components/Reporting';
+import RAGSearch from './components/RAGSearch';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
 
@@ -17,7 +19,6 @@ export default function App() {
   const [jobs, setJobs] = useState([]);
   const [settings, setSettings] = useState({ emailTemplates: {} });
   const [unreadCount, setUnreadCount] = useState(0);
-  const [isGoogleConnected, setIsGoogleConnected] = useState(false);
   const [emailProvider, setEmailProvider] = useState('gmail');
   const [aiProvider, setAiProvider] = useState('gemini');
   const [emailConnectionError, setEmailConnectionError] = useState(null);
@@ -38,6 +39,7 @@ export default function App() {
   
   // Ranking mode state
   const [rankAccordingToJob, setRankAccordingToJob] = useState(true);
+  const [currentRole, setCurrentRole] = useState('Admin');
 
   useEffect(() => {
     if (theme === 'light') {
@@ -56,6 +58,7 @@ export default function App() {
 
     // 2. Connect poll checks (every 30 seconds)
     const interval = setInterval(() => {
+      if (document.hidden) return;
       fetchData(true); // silent fetch
     }, 30000);
 
@@ -76,7 +79,6 @@ export default function App() {
       // Fetch Auth Status
       const authRes = await fetch(`${BACKEND_URL}/api/auth/status`);
       const authData = await authRes.json();
-      setIsGoogleConnected(authData.authenticated);
       setEmailProvider(authData.emailProvider || 'gmail');
       setAiProvider(authData.aiProvider || 'gemini');
       
@@ -304,20 +306,53 @@ export default function App() {
             <GitCommit size={16} /> Pipeline Board
           </button>
 
+
           <button 
             className="btn" 
             style={{ 
               justifyContent: 'flex-start',
-              background: activeTab === 'search' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
-              color: activeTab === 'search' ? 'var(--text-primary)' : 'var(--text-secondary)',
-              borderLeft: activeTab === 'search' ? '3px solid var(--accent-primary)' : '3px solid transparent',
+              background: activeTab === 'ai-search' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+              color: activeTab === 'ai-search' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              borderLeft: activeTab === 'ai-search' ? '3px solid var(--accent-primary)' : '3px solid transparent',
               borderRadius: '0 var(--radius-md) var(--radius-md) 0',
               marginLeft: '-16px',
               paddingLeft: '28px'
             }}
-            onClick={() => setActiveTab('search')}
+            onClick={() => setActiveTab('ai-search')}
           >
-            <Search size={16} /> Tag Search
+            <Sparkles size={16} /> AI Search
+          </button>
+
+          <button 
+            className="btn" 
+            style={{ 
+              justifyContent: 'flex-start',
+              background: activeTab === 'ingestion' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+              color: activeTab === 'ingestion' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              borderLeft: activeTab === 'ingestion' ? '3px solid var(--accent-primary)' : '3px solid transparent',
+              borderRadius: '0 var(--radius-md) var(--radius-md) 0',
+              marginLeft: '-16px',
+              paddingLeft: '28px'
+            }}
+            onClick={() => setActiveTab('ingestion')}
+          >
+            <ClipboardList size={16} /> Ingestion Tracker
+          </button>
+
+          <button 
+            className="btn" 
+            style={{ 
+              justifyContent: 'flex-start',
+              background: activeTab === 'reporting' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+              color: activeTab === 'reporting' ? 'var(--text-primary)' : 'var(--text-secondary)',
+              borderLeft: activeTab === 'reporting' ? '3px solid var(--accent-primary)' : '3px solid transparent',
+              borderRadius: '0 var(--radius-md) var(--radius-md) 0',
+              marginLeft: '-16px',
+              paddingLeft: '28px'
+            }}
+            onClick={() => setActiveTab('reporting')}
+          >
+            <BarChart3 size={16} /> Reporting & Analytics
           </button>
 
           <button 
@@ -394,7 +429,22 @@ export default function App() {
             <span className="status-dot-purple" style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--status-interview)', display: 'inline-block' }}></span>
             AI Agent: {aiProvider === 'gemini' ? 'Gemini' : aiProvider === 'claude' ? 'Claude' : aiProvider === 'openai' ? 'OpenAI' : aiProvider === 'ollama' ? 'Ollama' : 'Gemini'}
           </div>
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '4px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: 'var(--bg-secondary)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)', marginTop: '4px' }}>
+            <span style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase' }}>Active Demo Role</span>
+            <select
+              value={currentRole}
+              onChange={(e) => {
+                setCurrentRole(e.target.value);
+                showToast(`Role switched to ${e.target.value}`, 'success');
+              }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '12px', fontWeight: '700', outline: 'none', cursor: 'pointer', width: '100%' }}
+            >
+              <option value="Admin" style={{ background: 'var(--bg-secondary)' }}>Administrator</option>
+              <option value="Recruiter" style={{ background: 'var(--bg-secondary)' }}>Recruiter</option>
+              <option value="Hiring Manager" style={{ background: 'var(--bg-secondary)' }}>Hiring Manager</option>
+            </select>
+          </div>
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)', textAlignment: 'center', marginTop: '4px' }}>
             v1.1.0 (Multi-Agent Engine)
           </span>
         </div>
@@ -410,7 +460,9 @@ export default function App() {
               {activeTab === 'dashboard' && 'Recruitment Analytics'}
               {activeTab === 'inbox' && (emailProvider === 'outlook' ? 'Outlook Sourcing Queue' : 'Gmail Sourcing Queue')}
               {activeTab === 'pipeline' && 'Talent Pipeline Kanban'}
-              {activeTab === 'search' && 'AI Tag Search Engine'}
+              {activeTab === 'ai-search' && 'AI Resume Search'}
+              {activeTab === 'ingestion' && 'Ingestion & Upload Log'}
+              {activeTab === 'reporting' && 'Reporting & Analytics'}
               {activeTab === 'settings' && 'System Configuration'}
             </h2>
           </div>
@@ -511,14 +563,23 @@ export default function App() {
             />
           </div>
           
-          <div style={{ display: activeTab === 'search' ? 'block' : 'none', height: '100%' }}>
-            <TagSearch 
-              candidates={candidates} 
-              jobs={jobs} 
-              backendUrl={BACKEND_URL}
-              onSelectCandidate={setSelectedCandidate}
-              rankAccordingToJob={rankAccordingToJob}
+
+          {activeTab === 'ai-search' && (
+            <RAGSearch
+              candidates={candidates}
+              onViewCandidate={setSelectedCandidate}
+              onEmailCandidate={setEmailCandidate}
+              showToast={showToast}
+              BACKEND_URL={BACKEND_URL}
             />
+          )}
+
+          <div style={{ display: activeTab === 'ingestion' ? 'block' : 'none', height: '100%' }}>
+            <IngestionTracker backendUrl={BACKEND_URL} isActive={activeTab === 'ingestion'} />
+          </div>
+
+          <div style={{ display: activeTab === 'reporting' ? 'block' : 'none', height: '100%' }}>
+            <Reporting candidates={candidates} jobs={jobs} />
           </div>
 
           <div style={{ display: activeTab === 'settings' ? 'block' : 'none', height: '100%' }}>
@@ -527,9 +588,10 @@ export default function App() {
               templates={settings.emailTemplates}
               onJobCreated={(newJob) => setJobs(prev => [...prev, newJob])}
               onJobDeleted={(id) => setJobs(prev => prev.filter(j => j.id !== id))}
-              onTemplatesUpdated={(tpls) => setSettings(prev => ({ ...prev, emailTemplates: tpls }))}
+              onJobUpdated={(updatedJob) => setJobs(prev => prev.map(j => j.id === updatedJob.id ? updatedJob : j))}
               onSettingsSaved={fetchData}
               backendUrl={BACKEND_URL}
+              currentRole={currentRole}
             />
           </div>
         </main>
@@ -549,6 +611,7 @@ export default function App() {
           onCandidateDeleted={handleCandidateDeleted}
           backendUrl={BACKEND_URL}
           rankAccordingToJob={rankAccordingToJob}
+          currentRole={currentRole}
         />
       )}
 

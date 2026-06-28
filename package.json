@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "mongoose": "^9.7.3",
+    "vitest": "^1.6.0"
+  }
+}

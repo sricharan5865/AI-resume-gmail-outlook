@@ -1,8 +1,14 @@
-import React from 'react';
-import { X, Briefcase, Mail, Phone, GraduationCap, Building2, Calendar, Sparkles, Check, CheckCircle2, XCircle, AlertCircle, Send, ArrowRight, Tag, Trash2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Briefcase, Mail, Phone, GraduationCap, Building2, Calendar, Sparkles, Check, CheckCircle2, XCircle, AlertCircle, Send, ArrowRight, Tag, Trash2, Eye } from 'lucide-react';
 
-export default function CandidateDetails({ candidate, job, onClose, onOpenEmailModal, onStageChanged, onCandidateDeleted, backendUrl, rankAccordingToJob }) {
+export default function CandidateDetails({ candidate, job, onClose, onOpenEmailModal, onStageChanged, onCandidateDeleted, backendUrl, rankAccordingToJob, currentRole }) {
   if (!candidate) return null;
+
+  const [rightTab, setRightTab] = useState(candidate.resumeUrl ? 'pdf' : 'text');
+
+  useEffect(() => {
+    setRightTab(candidate.resumeUrl ? 'pdf' : 'text');
+  }, [candidate.id, candidate.resumeUrl]);
 
   // Helper to parse date strings (e.g. "Sep 2024", "Present")
   const parseDateString = (str) => {
@@ -118,26 +124,36 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
 
 
   // Dynamically select parameters based on active ranking mode
-  const score = rankAccordingToJob ? candidate.matchScore : (candidate.ownCategoryScore ?? candidate.matchScore);
-  const reasoning = rankAccordingToJob ? candidate.matchExplanation : (candidate.ownCategoryExplanation ?? candidate.matchExplanation);
-  const matchingSkills = rankAccordingToJob ? candidate.matchingSkills : (candidate.ownCategoryMatchingSkills ?? candidate.matchingSkills);
-  const missingSkills = rankAccordingToJob ? candidate.missingSkills : (candidate.ownCategoryMissingSkills ?? candidate.missingSkills);
+  // If the candidate is not assigned to a specific job (General Role), always show their profile competency analysis.
+  const isGeneralRole = !candidate.jobId || !job;
+  const useJobMatch = rankAccordingToJob && !isGeneralRole;
+
+  const score = useJobMatch ? candidate.matchScore : (candidate.ownCategoryScore ?? candidate.matchScore);
+  const reasoning = useJobMatch ? candidate.matchExplanation : (candidate.ownCategoryExplanation ?? candidate.matchExplanation);
+  const matchingSkills = useJobMatch ? candidate.matchingSkills : (candidate.ownCategoryMatchingSkills ?? candidate.matchingSkills);
+  const missingSkills = useJobMatch ? candidate.missingSkills : (candidate.ownCategoryMissingSkills ?? candidate.missingSkills);
 
   const scoreColorClass = score >= 80 ? 'score-high' : score >= 50 ? 'score-medium' : 'score-low';
 
   const handleStageSelect = async (e) => {
     const newStage = e.target.value;
+    const oldStage = candidate.stage;
     try {
       onStageChanged(candidate.id, newStage);
-      await fetch(`${backendUrl}/api/candidates/${candidate.id}/stage`, {
+      const res = await fetch(`${backendUrl}/api/candidates/${candidate.id}/stage`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ stage: newStage })
       });
-    } catch (e) {
-      console.error(e);
+      if (!res.ok) {
+        throw new Error('Server rejected stage update');
+      }
+    } catch (err) {
+      console.error('Failed to update candidate stage:', err);
+      onStageChanged(candidate.id, oldStage);
+      alert(`Failed to update candidate stage on server. Reverting to original stage.`);
     }
   };
 
@@ -185,7 +201,12 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
           {/* Top Profile Summary Card */}
           <div className="glass" style={{ padding: '20px', borderRadius: 'var(--radius-md)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.01)' }}>
             <div>
-              <h2 style={{ fontSize: '22px', marginBottom: '8px' }}>{candidate.name}</h2>
+              <h2 style={{ fontSize: '22px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                {candidate.name}
+                <span className="tag-badge tag-seniority" style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '4px', background: 'rgba(99, 102, 241, 0.1)', color: 'var(--accent-primary)', fontWeight: '600' }}>
+                  {candidate.seniorityLevel || 'Mid'}
+                </span>
+              </h2>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px', color: 'var(--text-secondary)' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <Mail size={12} /> {candidate.email || 'No email specified'}
@@ -246,7 +267,7 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
                 {score}
               </div>
               <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontWeight: '500' }}>
-                {rankAccordingToJob ? 'Match Score' : 'Competency Score'}
+                {useJobMatch ? 'Match Score' : 'Competency Score'}
               </span>
             </div>
           </div>
@@ -260,6 +281,7 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
                 style={{ width: '150px', padding: '6px 12px', fontSize: '12px' }}
                 value={candidate.stage}
                 onChange={handleStageSelect}
+                disabled={currentRole === 'Hiring Manager'}
               >
                 <option value="Inbox">Inbox</option>
                 <option value="Shortlist">Shortlist</option>
@@ -279,20 +301,24 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
               >
                 Open PDF in Tab
               </a>
-              <button 
-                className="btn btn-primary" 
-                style={{ padding: '8px 14px', fontSize: '12px' }}
-                onClick={() => onOpenEmailModal(candidate)}
-              >
-                <Send size={12} /> Send Letter
-              </button>
-              <button 
-                className="btn btn-danger" 
-                style={{ padding: '8px 14px', fontSize: '12px' }}
-                onClick={handleDeleteCandidate}
-              >
-                <Trash2 size={12} /> Delete
-              </button>
+              {currentRole !== 'Hiring Manager' && (
+                <button 
+                  className="btn btn-primary" 
+                  style={{ padding: '8px 14px', fontSize: '12px' }}
+                  onClick={() => onOpenEmailModal(candidate)}
+                >
+                  <Send size={12} /> Send Letter
+                </button>
+              )}
+              {currentRole !== 'Hiring Manager' && (
+                <button 
+                  className="btn btn-danger" 
+                  style={{ padding: '8px 14px', fontSize: '12px' }}
+                  onClick={handleDeleteCandidate}
+                >
+                  <Trash2 size={12} /> Delete
+                </button>
+              )}
             </div>
           </div>
 
@@ -339,7 +365,7 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
           {/* AI Scoring Analysis (Reasoning & Skill Matrix) */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <h3 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-secondary)' }}>
-              <Sparkles size={16} /> {rankAccordingToJob ? 'AI Match Analysis' : 'AI Competency Analysis'}
+              <Sparkles size={16} /> {useJobMatch ? 'AI Match Analysis' : 'AI Competency Analysis'}
             </h3>
             
             <div className="glass" style={{ padding: '20px', borderRadius: 'var(--radius-md)', background: 'rgba(139, 92, 246, 0.03)', border: '1px solid rgba(139, 92, 246, 0.15)' }}>
@@ -388,6 +414,75 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
 
             </div>
           </div>
+
+          {/* HR & Technical Interview Questions */}
+          {((candidate.hrQuestions && candidate.hrQuestions.length > 0) || 
+            (candidate.technicalQuestions && candidate.technicalQuestions.length > 0)) ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <h3 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-secondary)' }}>
+                <Sparkles size={16} /> Tailored Interview Questions & Answers
+              </h3>
+              
+              {candidate.hrQuestions && candidate.hrQuestions.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <h4 style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Behavioral & HR Prep
+                  </h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {candidate.hrQuestions.map((q, idx) => (
+                      <div key={idx} className="glass" style={{ padding: '16px', borderRadius: 'var(--radius-md)', background: 'rgba(99, 102, 241, 0.02)', border: '1px solid rgba(99, 102, 241, 0.1)' }}>
+                        <p style={{ fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)', marginBottom: '8px', lineHeight: '1.4' }}>
+                          Q: {q.question}
+                        </p>
+                        {(q.sample_answer || q.answer) && (
+                          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0, paddingLeft: '12px', borderLeft: '2px solid var(--accent-primary)', lineHeight: '1.5' }}>
+                            <strong>Suggested Prep:</strong> {q.sample_answer || q.answer}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {candidate.technicalQuestions && candidate.technicalQuestions.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' }}>
+                  <h4 style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Technical & Domain Prep
+                  </h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {candidate.technicalQuestions.map((q, idx) => (
+                      <div key={idx} className="glass" style={{ padding: '16px', borderRadius: 'var(--radius-md)', background: 'rgba(139, 92, 246, 0.02)', border: '1px solid rgba(139, 92, 246, 0.1)' }}>
+                        <p style={{ fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)', marginBottom: '8px', lineHeight: '1.4' }}>
+                          Q: {q.question}
+                        </p>
+                        {(q.sample_answer || q.answer) && (
+                          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0, paddingLeft: '12px', borderLeft: '2px solid var(--accent-secondary)', lineHeight: '1.5' }}>
+                            <strong>Suggested Prep:</strong> {q.sample_answer || q.answer}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            candidate.interviewQuestions && candidate.interviewQuestions.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <h3 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-secondary)' }}>
+                  <Sparkles size={16} /> HR & Technical Interview Questions
+                </h3>
+                <div className="glass" style={{ padding: '20px', borderRadius: 'var(--radius-md)', background: 'rgba(99, 102, 241, 0.03)', border: '1px solid rgba(99, 102, 241, 0.15)' }}>
+                  <ul style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px', color: 'var(--text-primary)' }}>
+                    {candidate.interviewQuestions.map((q, idx) => (
+                      <li key={idx} style={{ lineHeight: '1.5' }}>{q}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )
+          )}
 
           {/* Professional Experience */}
           <div>
@@ -474,19 +569,81 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
 
         </div>
         
-        {/* Right Column: PDF Viewer */}
-        <div className="split-view-right">
-          {candidate.resumeUrl ? (
-            <iframe 
-              src={`${backendUrl}${candidate.resumeUrl}#toolbar=0`} 
-              className="pdf-viewer" 
-              title="Resume PDF Viewer"
-            />
-          ) : (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-              No PDF Resume Available
-            </div>
-          )}
+        {/* Right Column: PDF Viewer / Text Resume */}
+        <div className="split-view-right" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+          {/* Tab Header */}
+          <div style={{
+            display: 'flex',
+            borderBottom: '1px solid var(--glass-border)',
+            background: 'rgba(0, 0, 0, 0.2)',
+            padding: '8px 16px 0 16px',
+            gap: '8px'
+          }}>
+            <button
+              className={`rag-mode-btn ${rightTab === 'pdf' ? 'rag-mode-active' : ''}`}
+              style={{
+                borderBottomLeftRadius: 0,
+                borderBottomRightRadius: 0,
+                padding: '8px 16px',
+                fontSize: '13px',
+                fontWeight: '500',
+                borderBottom: rightTab === 'pdf' ? '2px solid var(--accent-primary)' : 'none',
+                background: rightTab === 'pdf' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+                color: rightTab === 'pdf' ? 'var(--text-primary)' : 'var(--text-secondary)'
+              }}
+              onClick={() => setRightTab('pdf')}
+              disabled={!candidate.resumeUrl}
+            >
+              PDF Resume
+            </button>
+            <button
+              className={`rag-mode-btn ${rightTab === 'text' ? 'rag-mode-active' : ''}`}
+              style={{
+                borderBottomLeftRadius: 0,
+                borderBottomRightRadius: 0,
+                padding: '8px 16px',
+                fontSize: '13px',
+                fontWeight: '500',
+                borderBottom: rightTab === 'text' ? '2px solid var(--accent-primary)' : 'none',
+                background: rightTab === 'text' ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+                color: rightTab === 'text' ? 'var(--text-primary)' : 'var(--text-secondary)'
+              }}
+              onClick={() => setRightTab('text')}
+            >
+              Extracted Text
+            </button>
+          </div>
+
+          {/* Tab Body */}
+          <div style={{ flexGrow: 1, overflow: 'hidden', height: '100%' }}>
+            {rightTab === 'pdf' && candidate.resumeUrl ? (
+              <iframe 
+                src={`${backendUrl}${candidate.resumeUrl}#toolbar=0`} 
+                className="pdf-viewer" 
+                title="Resume PDF Viewer"
+              />
+            ) : (
+              <div style={{ 
+                height: '100%', 
+                overflowY: 'auto', 
+                padding: '24px', 
+                whiteSpace: 'pre-wrap', 
+                fontFamily: 'monospace',
+                fontSize: '13px',
+                color: 'var(--text-primary)',
+                background: 'rgba(0, 0, 0, 0.15)',
+                lineHeight: '1.6'
+              }}>
+                {candidate.resumeText && candidate.resumeText.trim() ? (
+                  candidate.resumeText
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
+                    No Resume Text Content Available
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         
         </div>

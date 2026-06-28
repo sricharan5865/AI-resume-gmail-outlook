@@ -9,126 +9,92 @@
 The application is split into a **Frontend (Client)**, a **Backend (Server)**, a **Database Layer**, and a **Python OCR Subsystem**.
 
 ### Frontend (Client)
-* **Framework**: React.js (Vite bundler) for a fast, modern reactive UI.
-* **Styling**: Modern Vanilla CSS, implementing glassmorphism, glowing HUD elements, and custom scrollbars.
-* **Icons**: `lucide-react` for premium vector iconography.
-* **PDF Viewer**: Embedded HTML iframe utilizing native browser PDF renderers.
+* **React.js**: JavaScript framework used to build the responsive and interactive single-page application (SPA) UI.
+* **Vite**: Modern build tool and development server for fast bundling, compilation, and hot module replacement.
+* **Vanilla CSS**: Used for all custom styling, implementing glassmorphism layouts, glowing HUD elements, and customized scrollbars.
+* **Lucide React**: Vector icon library used for modern and consistent HUD icon styles.
+* **DOM Tab State Retention**: Single-page setup with tabs kept mounted in the DOM to prevent input and PDF preview state resets when navigating views.
 
 ### Backend (Server)
-* **Runtime**: Node.js (ES Modules, version 20+).
-* **Framework**: Express.js for REST API endpoints.
-* **Ingestion/Storage**: `multer` for secure PDF file uploads, stored in `/uploads`.
-* **Automation**: Node-scheduler loops for automated email checks.
+* **Node.js (v20+)**: JavaScript runtime environment.
+* **Express.js**: Backend framework hosting the REST APIs for candidate retrieval, tag search, email synchronization, and settings management.
+* **Multer**: Middleware used for handling multipart/form-data (secure candidate resume file uploads).
+* **Node-Scheduler**: Automated cron-like runner that schedules the background Gmail/Outlook sourcing loop.
 
-### AI Engine (Gemini)
-* **Integration**: Native direct integration with the Google Gemini API (or via OpenRouter).
-* **Model**: `gemini-1.5-flash` for high-speed, cost-effective structured resume parsing and match scoring.
+### AI Engine (Gemini AI)
+* **Gemini AI API**: Acts as the language model gateway.
+* **`google/gemini-2.5-flash`**: The specific LLM endpoint utilized to convert unstructured resume texts into formatted JSON profiles, score candidates, and assign recruiting tags.
 
 ### Database Layer
-* **Database**: MongoDB (talentflow database).
-* **ODM**: Mongoose for modeling Candidate, Job, Settings, and ProcessedEmail schemas.
+* **MongoDB & MongoDB Atlas**: NoSQL database used to store candidates, jobs, configuration settings, and processed email metadata.
+* **Mongoose**: Object Data Modeling (ODM) library used to structure the schemas and handle database queries.
 
 ### Python OCR Subsystem (Scanned PDF Fallback)
-* **Language**: Python 3.
-* **Libraries**:
-  * `fitz` (PyMuPDF) to convert PDF pages into high-resolution images.
-  * `opencv-python` (OpenCV) for image decoding and grayscale preprocessing.
-  * `pytesseract` to bridge Python with the Tesseract-OCR binary.
-* **Engine**: Tesseract-OCR (v5.4.0) for character recognition.
+* **Python 3**: Runtime engine for OCR tasks when scanned PDFs are detected.
+* **PyMuPDF (`fitz`)**: Python module used to render PDF pages into images.
+* **OpenCV (`opencv-python`)**: Preprocesses the rendered page images (like converting to grayscale) for improved text visibility.
+* **Tesseract-OCR & PyTesseract**: OCR engine used to read character shapes from images/scanned PDFs and translate them back into editable text.
 
 ---
 
-## 2. Core Workflows & Processes
+## 2. Production Deployments & Configurations (Render + MongoDB Atlas)
 
-### A. Automated Email Sourcing
-1. A background timer runs every **30 seconds** on the backend.
-2. It queries the configured Gmail inbox (via IMAP/Gmail API) for unread emails containing PDF attachments.
-3. For each match, it downloads the PDF, saves it in `server/uploads`, and initiates text extraction.
-4. Once processed, the email's unique `messageId` is stored in the `processedemails` collection. This prevents the poller from ever duplicate-processing or re-importing the same candidate, even if they are deleted from the pipeline.
+### A. MongoDB Atlas Cloud Database
+* **Database Cluster**: `Cluster0`
+* **DB User**: `sricharanjayavarapu_db_user`
+* **Network Access**: Whitelisted to `0.0.0.0/0` to allow Render servers to connect securely.
 
-### B. Smart PDF Text Extraction & OCR Fallback
-1. **Upload/Sourcing**: PDF is uploaded via frontend or sourced via Gmail.
-2. **Text Parsing**: Attempt to extract text using standard PDF parsing (`pdf-parse`).
-3. **Scanned PDF Handling**: If text extraction returns empty or insufficient content, the Python OCR fallback is triggered.
-4. **Image Conversion**: PyMuPDF (`fitz`) converts each PDF page into a high-res grayscale image.
-5. **Character Recognition**: OpenCV preprocesses the images and Tesseract OCR extracts the raw text.
-6. **AI Parsing**: The raw text (whether from standard parsing or OCR) is sent to Gemini to generate the structured JSON candidate profile.
+### B. Backend Web Service (Render)
+* **URL**: `https://ai-resume-gmail-outlook.onrender.com`
+* **Environment Variables**:
+  * `MONGO_URI`: `mongodb+srv://sricharanjayavarapu_db_user:<password>@cluster0.p7dzk.mongodb.net/talentflow?retryWrites=true&w=majority`
+  * `PORT`: `5000`
+  * `GEMINI_API_KEY`: *(Your Gemini AI API key)*
+  * `AI_MODEL`: `google/gemini-2.5-flash` *(Overrides default fallback)*
+  * `FRONTEND_URL`: `https://ai-resume-gmail-outlook-1.onrender.com` *(CORS authorization)*
+  * `GMAIL_USER_EMAIL`: *(recruiter email for sourcing)*
+  * `GMAIL_APP_PASSWORD`: *(16-character Google App Password)*
 
-### C. Split LinkedIn URL Reconstruction
-* **Problem**: In two-column PDF resumes, horizontal OCR scanners read lines across columns, splitting contact info (e.g. reading `www.linkedin.com/in/jayav` on line 1, and the suffix `arapu-sri-charan-43273137b` further down the page), interspersed with other text.
-* **Process**: The Gemini parser's prompt instructs the model to recognize split URLs and OCR spelling typos (like `wwwiinkedin` -> `linkedin`), merge the segments, and reconstruct a single, valid, clickable LinkedIn URL.
-
-### D. Client-Side State Retention
-* **Problem**: Normal conditional tab rendering unmounts inactive pages, resetting selections and search inputs when switching views.
-* **Process**: All tab panels (`Dashboard`, `Inbox`, `PipelineBoard`, `TagSearch`, `Settings`) are kept mounted in the DOM. Switching tabs toggles their CSS `display` property (`block` vs `none`). This retains the state of loaded PDF previews, selected emails in the sourcing queue, search inputs, and job filters.
+### C. Frontend Static Site (Render)
+* **URL**: `https://ai-resume-gmail-outlook-1.onrender.com`
+* **Environment Variables**:
+  * `VITE_BACKEND_URL`: `https://ai-resume-gmail-outlook.onrender.com` *(Tells the client where the backend resides. Set at build-time)*
+* **Build Settings**:
+  * Build Command: `npm run build`
+  * Publish Directory: `dist` (or `client/dist` depending on repository layout)
 
 ---
 
-## 3. Deployment & Setup Guide
+## 3. Important Bug Fixes & Optimizations
 
-### Step 1: System Prerequisites
-Ensure the following are installed on the deployment machine:
-1. **Node.js** (v20 or higher)
-2. **Python** (v3.10 or higher)
-3. **MongoDB** (running locally on port `27017` or a cloud URI)
-4. **Tesseract-OCR**:
-   * **Windows**: Download and install [Tesseract-OCR](https://github.com/UB-Mannheim/tesseract/wiki).
-   * **Mac**: `brew install tesseract`
-   * **Linux**: `sudo apt-get install tesseract-ocr`
-   * *Note: Ensure the binary path `C:\Program Files\Tesseract-OCR\tesseract.exe` exists or is added to the system PATH.*
+### A. AI Model Endpoint Error
+* **Problem**: The backend defaulted to requesting `google/gemini-flash-1.5`, which is no longer a valid model ID.
+* **Fix**: Updated all fallbacks in `geminiParser.js` and `emailCategorizer.js` to `google/gemini-2.5-flash`.
 
-### Step 2: Install Project Dependencies
-Navigate to the root folder and run:
+### B. API Credit & Token Budget Error
+* **Problem**: Free tier API keys restrict the maximum possible token request size. Since the backend didn't specify `max_tokens`, the API defaulted it to the model's absolute maximum of **65,535 tokens**, causing requests to fail with a credit/budget check.
+* **Fix**: Added explicit token limits to the API calls:
+  * Resume Parsing: `max_tokens: 2000`
+  * Email Categorization: `max_tokens: 1000`
+  This restricts the potential cost per call, allowing them to fit cleanly within the free tier credit limits.
 
-**For Backend (Server):**
-```bash
-cd server
-npm install
-pip install pymupdf opencv-python pytesseract requests
-```
+### C. UI Score Reset & "0" Scores
+* **Problem**: General candidates (without matched jobs) showed `0` for scores in the **Advanced Tag Search** page because it was hardcoded to show `matchScore`.
+* **Fix**: Updated `TagSearch.jsx` to respect the global `rankAccordingToJob` toggle, matching the Dashboard and Pipeline Board by falling back to showing `ownCategoryScore` (the candidate's standalone competency score) when job matching is not selected.
 
-**For Frontend (Client):**
-```bash
-cd client
-npm install
-```
+---
 
-### Step 3: Configure Environment Variables
-Create a file named `.env` in the `server` directory and paste the following:
-
-```env
-# Server Port
-PORT=5000
-
-# Gemini AI Integration
-GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
-# If using OpenRouter, specify model (e.g., google/gemini-flash-1.5)
-AI_MODEL=google/gemini-flash-1.5
-
-# Database Config
-MONGO_URI=mongodb://localhost:27017/talentflow
-
-# Gmail Ingestion (IMAP Credentials)
-# To source emails, create an "App Password" in your Google Account security settings
-GMAIL_USER_EMAIL=your-recruiting-email@gmail.com
-GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
-
-# Frontend URL (CORS authorization)
-FRONTEND_URL=http://localhost:5173
-```
-
-### Step 4: Run the Application
+## 4. Run Locally (Development Setup)
 
 1. **Start Backend Server:**
    ```bash
    cd server
    npm run dev
    ```
-   *The console should print: `TalentFlow server running at http://localhost:5000` & `MongoDB Connected & Ready.`*
-
 2. **Start Frontend Server:**
    ```bash
    cd client
    npm run dev
    ```
-   *Vite will start the client at http://localhost:5173/.*
+   *The local frontend will start at http://localhost:5173/ and automatically connect to your local backend (port 5000) or your production backend depending on `.env` configuration.*
+
