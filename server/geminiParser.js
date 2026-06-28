@@ -12,6 +12,18 @@ function cleanJsonResponse(text) {
   if (clean.endsWith('```')) {
     clean = clean.substring(0, clean.length - 3);
   }
+  
+  // Sanitize raw control characters in string literals
+  clean = clean.replace(/"(?:[^"\\]|\\.)*"/g, (match) => {
+    return match
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t')
+      .replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, (char) => {
+        return '\\u' + ('0000' + char.charCodeAt(0).toString(16)).slice(-4);
+      });
+  });
+
   return clean.trim();
 }
 
