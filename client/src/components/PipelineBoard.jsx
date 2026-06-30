@@ -431,13 +431,13 @@ export default function PipelineBoard({
             ) : (
               <>
                 <Upload size={12} />
-                <span style={{ marginLeft: '6px' }}>Upload Resume PDF(s)</span>
+                <span style={{ marginLeft: '6px' }}>Upload Resume(s)</span>
               </>
             )}
             {!uploadingFile && (
               <input 
                 type="file" 
-                accept=".pdf" 
+                accept=".pdf,.docx,.doc,.txt,.rtf,.png,.jpg,.jpeg" 
                 multiple
                 style={{ display: 'none' }} 
                 onChange={handleFileUpload} 

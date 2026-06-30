@@ -16,7 +16,7 @@ import {
   getIMAPAttachmentData 
 } from './imapSourcing.js';
 import { parseResume, scoreCandidate, scoreCandidateByOwnCategory, generateTags, generateJobDescription, generateQuestionsForCandidate } from './geminiParser.js';
-import { extractTextFromPDF } from './parser.js';
+import { extractTextFromPDF, extractTextFromFile } from './parser.js';
 import { searchIndex } from './searchIndex.js';
 import { Candidate, Job, Settings, ProcessedEmail, IngestionLog } from './models.js';
 import {
@@ -163,11 +163,7 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ 
-  storage,
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf') cb(null, true);
-    else cb(new Error('Only PDF resumes are supported.'));
-  }
+  storage
 });
 
 // Connect to MongoDB
@@ -298,7 +294,7 @@ async function processEmailAttachment(messageId, filename, buffer, emailConfig, 
     fs.writeFileSync(localFilePath, buffer);
 
     console.log(`Extracting text from ${filename}...`);
-    const pdfText = await extractTextFromPDF(buffer);
+    const pdfText = await extractTextFromFile(localFilePath, filename, null);
 
     console.log('Parsing resume with Gemini...');
     const parsedData = await parseResume(pdfText);
@@ -718,7 +714,7 @@ app.post('/api/candidates/extract-gmail', async (req, res) => {
     const localFilename = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     localFilePath = path.join(UPLOADS_DIR, localFilename);
     fs.writeFileSync(localFilePath, buffer);
-    const pdfText = await extractTextFromPDF(buffer);
+    const pdfText = await extractTextFromFile(localFilePath, filename, null);
     const parsedData = await parseResume(pdfText);
 
     // Duplicate Check
@@ -841,7 +837,7 @@ app.post('/api/candidates/extract-gmail', async (req, res) => {
 });
 
 app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No PDF uploaded.' });
+  if (!req.file) return res.status(400).json({ error: 'No resume file uploaded.' });
   const { jobId, logId } = req.body;
 
   let activeLogId = logId;
@@ -866,8 +862,7 @@ app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => 
   }
 
   try {
-    const buffer = fs.readFileSync(req.file.path);
-    const pdfText = await extractTextFromPDF(buffer);
+    const pdfText = await extractTextFromFile(req.file.path, req.file.originalname, req.file.mimetype);
     const parsedData = await parseResume(pdfText);
     
     // Duplicate Check

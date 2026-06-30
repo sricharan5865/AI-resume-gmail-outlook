@@ -596,7 +596,7 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
               onClick={() => setRightTab('pdf')}
               disabled={!candidate.resumeUrl && !(window.localResumeUrls && window.localResumeUrls[candidate.id])}
             >
-              PDF Resume
+              Original Resume
             </button>
             <button
               className={`rag-mode-btn ${rightTab === 'text' ? 'rag-mode-active' : ''}`}

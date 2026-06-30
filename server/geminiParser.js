@@ -246,13 +246,13 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Claude (OpenRouter) API error: ${response.status} - ${errorText}`);
+        throw new Error(`Claude API error: ${response.status} - ${errorText}`);
       }
 
       const result = await response.json();
       const text = result.choices?.[0]?.message?.content;
       if (!text) {
-        throw new Error('Claude (OpenRouter) API returned an empty response.');
+        throw new Error('Claude API returned an empty response.');
       }
 
       const cleanedText = cleanJsonResponse(text);

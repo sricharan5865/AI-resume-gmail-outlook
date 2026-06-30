@@ -40,7 +40,14 @@ export async function getEmbeddingConfig() {
   const isOpenRouter = apiKey.startsWith('sk-or-');
   const embeddingProvider = isOpenRouter ? 'openrouter' : 'gemini';
 
-  return { apiKey, isOpenRouter, provider: embeddingProvider };
+  const providerNames = {
+    gemini: 'Gemini',
+    openai: 'OpenAI',
+    claude: 'Claude'
+  };
+  const providerDisplayName = providerNames[provider] || 'AI';
+
+  return { apiKey, isOpenRouter, provider: embeddingProvider, providerDisplayName };
 }
 
 /**
@@ -81,7 +88,7 @@ async function withRetry(apiCallFn, maxRetries = 3) {
  * @param {string} apiKey - OpenRouter API key
  * @returns {Promise<number[][]>} Array of embedding vectors
  */
-async function embedViaOpenRouter(texts, apiKey) {
+async function embedViaOpenRouter(texts, apiKey, providerDisplayName = 'AI') {
   const response = await fetch('https://openrouter.ai/api/v1/embeddings', {
     method: 'POST',
     headers: {
@@ -97,12 +104,12 @@ async function embedViaOpenRouter(texts, apiKey) {
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`OpenRouter Embeddings API error: ${response.status} - ${errorText}`);
+    throw new Error(`${providerDisplayName} Embeddings API error: ${response.status} - ${errorText}`);
   }
 
   const result = await response.json();
   if (!result.data || !Array.isArray(result.data)) {
-    throw new Error(`Invalid response format from OpenRouter Embeddings: ${JSON.stringify(result)}`);
+    throw new Error(`Invalid response format from ${providerDisplayName} Embeddings: ${JSON.stringify(result)}`);
   }
   // Sort by index to ensure correct ordering
   const sorted = result.data.sort((a, b) => a.index - b.index);
@@ -153,7 +160,7 @@ async function embedViaGemini(texts, apiKey, taskType = 'RETRIEVAL_DOCUMENT') {
 export async function embedTexts(texts) {
   if (!texts || texts.length === 0) return [];
 
-  const { apiKey, isOpenRouter } = await getEmbeddingConfig();
+  const { apiKey, isOpenRouter, providerDisplayName } = await getEmbeddingConfig();
   const BATCH_SIZE = 100;
   const allEmbeddings = [];
 
@@ -162,7 +169,7 @@ export async function embedTexts(texts) {
 
     const embeddings = await withRetry(async () => {
       if (isOpenRouter) {
-        return await embedViaOpenRouter(batch, apiKey);
+        return await embedViaOpenRouter(batch, apiKey, providerDisplayName);
       } else {
         return await embedViaGemini(batch, apiKey, 'RETRIEVAL_DOCUMENT');
       }
@@ -202,11 +209,11 @@ export async function embedQuery(query) {
     return cached;
   }
 
-  const { apiKey, isOpenRouter } = await getEmbeddingConfig();
+  const { apiKey, isOpenRouter, providerDisplayName } = await getEmbeddingConfig();
 
   const embedding = await withRetry(async () => {
     if (isOpenRouter) {
-      const results = await embedViaOpenRouter([query.trim()], apiKey);
+      const results = await embedViaOpenRouter([query.trim()], apiKey, providerDisplayName);
       return results[0];
     } else {
       const results = await embedViaGemini([query.trim()], apiKey, 'RETRIEVAL_QUERY');

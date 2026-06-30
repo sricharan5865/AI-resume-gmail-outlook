@@ -27,17 +27,26 @@ def process_image(image_bytes):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python ocr_fallback.py <pdf_path>", file=sys.stderr)
+        print("Usage: python ocr_fallback.py <file_path>", file=sys.stderr)
         sys.exit(1)
         
-    pdf_path = sys.argv[1]
-    if not os.path.exists(pdf_path):
-        print(f"Error: File not found {pdf_path}", file=sys.stderr)
+    file_path = sys.argv[1]
+    if not os.path.exists(file_path):
+        print(f"Error: File not found {file_path}", file=sys.stderr)
         sys.exit(1)
 
     try:
+        # Check if the file is an image directly
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif']:
+            with open(file_path, 'rb') as f:
+                img_bytes = f.read()
+            text = process_image(img_bytes)
+            print(text)
+            sys.exit(0)
+
         # Extract images from PDF using PyMuPDF
-        doc = fitz.open(pdf_path)
+        doc = fitz.open(file_path)
         full_text = []
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
