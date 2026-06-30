@@ -16,7 +16,7 @@ import {
   getIMAPAttachmentData 
 } from './imapSourcing.js';
 import { parseResume, scoreCandidate, scoreCandidateByOwnCategory, generateTags, generateJobDescription, generateQuestionsForCandidate } from './geminiParser.js';
-import { extractTextFromPDF, extractTextFromFile } from './parser.js';
+import { extractTextFromPDF, extractTextFromFile, convertDocxToHtml } from './parser.js';
 import { searchIndex } from './searchIndex.js';
 import { Candidate, Job, Settings, ProcessedEmail, IngestionLog } from './models.js';
 import {
@@ -833,6 +833,99 @@ app.post('/api/candidates/extract-gmail', async (req, res) => {
       }
     ).catch(e => console.error('Failed to update ingestion log:', e));
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/candidates/:id/resume-html', async (req, res) => {
+  try {
+    const candidate = await Candidate.findOne({ id: req.params.id });
+    if (!candidate || !candidate.resumeUrl) {
+      return res.status(404).send('Resume not found.');
+    }
+
+    const filePath = path.join(UPLOADS_DIR, path.basename(candidate.resumeUrl));
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send('Resume file not found on server.');
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.docx') {
+      const html = await convertDocxToHtml(filePath);
+      const styledHtml = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                color: #e5e7eb;
+                background-color: #0f172a;
+                padding: 32px;
+                line-height: 1.7;
+                margin: 0;
+              }
+              p { margin-bottom: 1.2em; }
+              h1, h2, h3, h4, h5, h6 { 
+                color: #ffffff; 
+                margin-top: 1.8em; 
+                margin-bottom: 0.6em; 
+                font-weight: 600;
+              }
+              h1 { border-bottom: 1px solid #334155; padding-bottom: 8px; }
+              ul, ol { margin-bottom: 1.2em; padding-left: 24px; }
+              li { margin-bottom: 0.4em; }
+              table { 
+                border-collapse: collapse; 
+                width: 100%; 
+                margin-bottom: 1.5em; 
+              }
+              th, td { 
+                border: 1px solid #334155; 
+                padding: 10px; 
+                text-align: left; 
+              }
+              th { background-color: #1e293b; }
+            </style>
+          </head>
+          <body>
+            ${html || '<p>Empty Document</p>'}
+          </body>
+        </html>
+      `;
+      res.setHeader('Content-Type', 'text/html');
+      return res.send(styledHtml);
+    } else if (ext === '.txt' || ext === '.rtf' || ext === '.md') {
+      const text = fs.readFileSync(filePath, 'utf-8');
+      const styledHtml = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              body {
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                color: #e5e7eb;
+                background-color: #0f172a;
+                padding: 32px;
+                line-height: 1.7;
+                white-space: pre-wrap;
+                margin: 0;
+                font-size: 14px;
+              }
+            </style>
+          </head>
+          <body>${text}</body>
+        </html>
+      `;
+      res.setHeader('Content-Type', 'text/html');
+      return res.send(styledHtml);
+    } else {
+      return res.status(400).send('Only .docx, .txt, .rtf, .md files can be viewed as HTML.');
+    }
+  } catch (error) {
+    console.error('Failed to convert resume to HTML:', error);
+    return res.status(500).send(`Error converting resume: ${error.message}`);
   }
 });
 

@@ -169,3 +169,13 @@ function runPythonOCRDirect(filePath) {
     });
   });
 }
+
+/**
+ * Converts a DOCX file to HTML.
+ * @param {string} filePath - Absolute path to the DOCX file
+ * @returns {Promise<string>} - Extracted HTML content
+ */
+export async function convertDocxToHtml(filePath) {
+  const result = await mammoth.convertToHtml({ path: filePath });
+  return result.value;
+}
