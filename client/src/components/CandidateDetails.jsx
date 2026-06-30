@@ -619,15 +619,69 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
           {/* Tab Body */}
           <div style={{ flexGrow: 1, overflow: 'hidden', height: '100%' }}>
             {rightTab === 'pdf' && (candidate.resumeUrl || (window.localResumeUrls && window.localResumeUrls[candidate.id])) ? (
-              <iframe 
-                src={
-                  (window.localResumeUrls && window.localResumeUrls[candidate.id]) 
-                    ? `${window.localResumeUrls[candidate.id]}#toolbar=0`
-                    : `${backendUrl}${candidate.resumeUrl}#toolbar=0`
-                } 
-                className="pdf-viewer" 
-                title="Resume PDF Viewer"
-              />
+              (() => {
+                const getFileType = (url) => {
+                  if (!url) return null;
+                  const parts = url.split('?')[0].split('/');
+                  const filename = parts[parts.length - 1];
+                  const ext = filename.split('.').pop().toLowerCase();
+                  return ext;
+                };
+
+                const resumeSrc = (window.localResumeUrls && window.localResumeUrls[candidate.id]) 
+                  ? window.localResumeUrls[candidate.id]
+                  : `${backendUrl}${candidate.resumeUrl}`;
+                const ext = getFileType(resumeSrc);
+
+                if (ext === 'pdf') {
+                  return (
+                    <iframe 
+                      src={`${resumeSrc}#toolbar=0`} 
+                      className="pdf-viewer" 
+                      title="Resume PDF Viewer"
+                    />
+                  );
+                } else if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'webp'].includes(ext)) {
+                  return (
+                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-start', height: '100%', overflowY: 'auto', padding: '16px', background: 'rgba(0,0,0,0.2)' }}>
+                      <img src={resumeSrc} alt="Original Resume" style={{ maxWidth: '100%', height: 'auto', borderRadius: 'var(--radius-sm)', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }} />
+                    </div>
+                  );
+                } else if (['txt', 'md', 'json', 'csv'].includes(ext)) {
+                  return (
+                    <div style={{ height: '100%', overflowY: 'auto', padding: '24px', whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '13px', color: 'var(--text-primary)', background: 'rgba(0, 0, 0, 0.15)', lineHeight: '1.6' }}>
+                      {candidate.resumeText || "No text available"}
+                    </div>
+                  );
+                } else {
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '16px', padding: '24px', color: 'var(--text-primary)', background: 'rgba(0, 0, 0, 0.15)' }}>
+                      <div style={{ fontSize: '48px' }}>📄</div>
+                      <div style={{ fontWeight: '600', fontSize: '16px' }}>Original Document ({ext ? ext.toUpperCase() : 'Unknown'})</div>
+                      <div style={{ color: 'var(--text-secondary)', fontSize: '13px', textAlign: 'center', maxWidth: '300px' }}>
+                        This document format cannot be rendered directly in the browser. You can download the original file or view the extracted text.
+                      </div>
+                      <a 
+                        href={resumeSrc} 
+                        download 
+                        style={{ 
+                          textDecoration: 'none', 
+                          padding: '8px 16px', 
+                          borderRadius: 'var(--radius-sm)', 
+                          background: 'var(--accent-primary)', 
+                          color: '#fff', 
+                          fontWeight: '500',
+                          fontSize: '13px',
+                          display: 'inline-flex',
+                          alignItems: 'center'
+                        }}
+                      >
+                        Download Document
+                      </a>
+                    </div>
+                  );
+                }
+              })()
             ) : (
               <div style={{ 
                 height: '100%', 
