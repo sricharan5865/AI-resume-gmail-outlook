@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Mail, RefreshCw, Paperclip, CheckCircle2, AlertCircle, Play, Loader, Trash2, Search } from 'lucide-react';
 
-export default function Inbox({ jobs, onCandidateImported, backendUrl, emailProvider: emailProviderProp }) {
+export default function Inbox({ token, jobs, onCandidateImported, backendUrl, emailProvider: emailProviderProp }) {
   const [emails, setEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [selectedJobId, setSelectedJobId] = useState('');
@@ -71,7 +71,9 @@ export default function Inbox({ jobs, onCandidateImported, backendUrl, emailProv
     try {
       setLoading(true);
       setError('');
-      const res = await fetch(`${backendUrl}/api/gmail/emails`);
+      const res = await fetch(`${backendUrl}/api/gmail/emails`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (!res.ok) {
         if (res.status === 401) {
           setIsAuthenticated(false);
@@ -98,7 +100,9 @@ export default function Inbox({ jobs, onCandidateImported, backendUrl, emailProv
   const checkAuthStatus = async () => {
     try {
       setAuthLoading(true);
-      const res = await fetch(`${backendUrl}/api/auth/status`);
+      const res = await fetch(`${backendUrl}/api/auth/status`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       setIsAuthenticated(data.authenticated);
       setEmailProviderLocal(data.emailProvider || 'gmail');
@@ -153,7 +157,8 @@ export default function Inbox({ jobs, onCandidateImported, backendUrl, emailProv
       const res = await fetch(`${backendUrl}/api/candidates/extract-gmail`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(reqBody)
       });
@@ -192,7 +197,10 @@ export default function Inbox({ jobs, onCandidateImported, backendUrl, emailProv
       setExtracting(true);
       setExtractProgress('Dismissing email...');
       const res = await fetch(`${backendUrl}/api/gmail/emails/${emailId}/dismiss`, {
-        method: 'POST'
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
       });
       if (!res.ok) {
         const errData = await res.json();
@@ -584,7 +592,7 @@ export default function Inbox({ jobs, onCandidateImported, backendUrl, emailProv
               )}
               {activeTab === 'pdf' && selectedEmail.attachments.length > 0 && (
                 <iframe 
-                  src={`${backendUrl}/api/gmail/attachment/${selectedEmail.id}/${selectedEmail.attachments[0].attachmentId}#toolbar=0`} 
+                  src={`${backendUrl}/api/gmail/attachment/${selectedEmail.id}/${selectedEmail.attachments[0].attachmentId}?token=${token}#toolbar=0`} 
                   style={{ width: '100%', height: '100%', border: 'none', display: 'block' }} 
                   title="PDF Preview"
                 />

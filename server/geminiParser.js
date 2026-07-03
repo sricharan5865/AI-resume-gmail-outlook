@@ -2,6 +2,226 @@ import dotenv from 'dotenv';
 import { Settings } from './models.js';
 dotenv.config();
 
+function extractJsonString(text) {
+  if (typeof text !== 'string') return '';
+  const firstBrace = text.indexOf('{');
+  const firstBracket = text.indexOf('[');
+  let startIdx = -1;
+  let endIdx = -1;
+
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    startIdx = firstBrace;
+    endIdx = text.lastIndexOf('}');
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+    endIdx = text.lastIndexOf(']');
+  }
+
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    return text;
+  }
+  return text.substring(startIdx, endIdx + 1);
+}
+
+function repairJsonStrings(str) {
+  let result = '';
+  let inString = false;
+  let i = 0;
+  
+  while (i < str.length) {
+    const char = str[i];
+    
+    if (char === '\\') {
+      result += str.substring(i, i + 2);
+      i += 2;
+      continue;
+    }
+    
+    if (char === '"') {
+      if (!inString) {
+        inString = true;
+        result += char;
+        i++;
+      } else {
+        let j = i + 1;
+        while (j < str.length && /\s/.test(str[j])) {
+          j++;
+        }
+        const nextNonSpace = str[j];
+        if (nextNonSpace === ',' || nextNonSpace === '}' || nextNonSpace === ']' || nextNonSpace === ':') {
+          inString = false;
+          result += char;
+        } else {
+          result += '\\"';
+        }
+        i++;
+      }
+    } else {
+      result += char;
+      i++;
+    }
+  }
+  return result;
+}
+
+function statefulJsonRepair(str) {
+  let repaired = '';
+  let inString = false;
+  let escape = false;
+  const stack = [];
+  
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    
+    if (escape) {
+      repaired += char;
+      escape = false;
+      continue;
+    }
+    
+    if (char === '\\') {
+      repaired += char;
+      escape = true;
+      continue;
+    }
+    
+    if (char === '"') {
+      inString = !inString;
+      repaired += char;
+      continue;
+    }
+    
+    if (inString) {
+      if (char === '\n') {
+        repaired += '\\n';
+      } else if (char === '\r') {
+        repaired += '\\r';
+      } else if (char === '\t') {
+        repaired += '\\t';
+      } else if (char.charCodeAt(0) < 32) {
+        repaired += '\\u' + ('0000' + char.charCodeAt(0).toString(16)).slice(-4);
+      } else {
+        repaired += char;
+      }
+      continue;
+    }
+    
+    if (char === '{' || char === '[') {
+      stack.push(char);
+      repaired += char;
+    } else if (char === '}') {
+      if (stack.length > 0 && stack[stack.length - 1] === '{') {
+        stack.pop();
+        repaired += char;
+      }
+    } else if (char === ']') {
+      if (stack.length > 0 && stack[stack.length - 1] === '[') {
+        stack.pop();
+        repaired += char;
+      }
+    } else {
+      repaired += char;
+    }
+  }
+  
+  if (inString) {
+    repaired += '"';
+  }
+  
+  repaired = repaired.trim();
+  repaired = repaired.replace(/,\s*([}\]])/g, '$1');
+  repaired = repaired.replace(/[:,\s]+$/, '');
+  
+  while (stack.length > 0) {
+    const open = stack.pop();
+    if (open === '{') {
+      repaired += '}';
+    } else if (open === '[') {
+      repaired += ']';
+    }
+  }
+  
+  return repaired;
+}
+
+function normalizeJsonKeys(parsed, schema) {
+  if (!parsed || typeof parsed !== 'object' || !schema || !schema.properties) {
+    return parsed;
+  }
+  
+  const normalized = {};
+  const schemaKeys = Object.keys(schema.properties);
+  
+  // Create a mapping of lowercase, stripped keys to the original schema keys
+  const keyMap = {};
+  schemaKeys.forEach(originalKey => {
+    const cleanKey = originalKey.toLowerCase().replace(/[^a-z0-9]/g, '');
+    keyMap[cleanKey] = originalKey;
+    // Map snake_case of camelCase as well
+    const snake = originalKey.replace(/([A-Z])/g, "_$1").toLowerCase();
+    keyMap[snake] = originalKey;
+  });
+
+  // Map the parsed keys to the correct schema keys
+  for (const parsedKey in parsed) {
+    const cleanParsedKey = parsedKey.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const mappedKey = keyMap[parsedKey] || keyMap[cleanParsedKey];
+    
+    if (mappedKey) {
+      normalized[mappedKey] = parsed[parsedKey];
+    } else {
+      normalized[parsedKey] = parsed[parsedKey];
+    }
+  }
+
+  return normalized;
+}
+
+function getDefaultValueFromSchema(schema) {
+  if (!schema) return null;
+  if (schema.type === 'OBJECT' || schema.type === 'object') {
+    const defaults = {};
+    if (schema.properties) {
+      for (const key in schema.properties) {
+        defaults[key] = getDefaultValueFromSchema(schema.properties[key]);
+      }
+    }
+    return defaults;
+  }
+  if (schema.type === 'ARRAY' || schema.type === 'array') {
+    return [];
+  }
+  if (schema.type === 'STRING' || schema.type === 'string') {
+    return '';
+  }
+  if (schema.type === 'INTEGER' || schema.type === 'integer' || schema.type === 'NUMBER' || schema.type === 'number') {
+    return 0;
+  }
+  if (schema.type === 'BOOLEAN' || schema.type === 'boolean') {
+    return false;
+  }
+  return null;
+}
+
+function mergeWithDefaults(obj, fallback) {
+  if (fallback === undefined || fallback === null) return obj;
+  if (obj === undefined || obj === null) {
+    return JSON.parse(JSON.stringify(fallback));
+  }
+  if (Array.isArray(fallback)) {
+    if (!Array.isArray(obj)) return JSON.parse(JSON.stringify(fallback));
+    return obj;
+  }
+  if (typeof fallback === 'object' && typeof obj === 'object') {
+    const merged = { ...obj };
+    for (const key in fallback) {
+      merged[key] = mergeWithDefaults(obj[key], fallback[key]);
+    }
+    return merged;
+  }
+  return obj;
+}
+
 function cleanJsonResponse(text) {
   let clean = text.trim();
   if (clean.startsWith('```json')) {
@@ -12,6 +232,9 @@ function cleanJsonResponse(text) {
   if (clean.endsWith('```')) {
     clean = clean.substring(0, clean.length - 3);
   }
+  
+  // Repair unescaped quotes inside string values
+  clean = repairJsonStrings(clean);
   
   // Sanitize raw control characters in string literals
   clean = clean.replace(/"(?:[^"\\]|\\.)*"/g, (match) => {
@@ -27,21 +250,126 @@ function cleanJsonResponse(text) {
   return clean.trim();
 }
 
-function safeParseJson(text, cleanedText) {
+function safeExtractAndParseJson(text, schema = null, fallback = null) {
+  const extracted = extractJsonString(text);
+  const cleaned = cleanJsonResponse(extracted);
+  let parsed = null;
   try {
-    return JSON.parse(cleanedText);
+    parsed = JSON.parse(cleaned);
   } catch (error) {
-    console.error('GeminiParser: JSON parsing failed.');
-    console.error('Raw response text:', text);
-    console.error('Cleaned text tried to parse:', cleanedText);
-    throw error;
+    try {
+      const repaired = statefulJsonRepair(cleaned);
+      parsed = JSON.parse(repaired);
+    } catch (repairError) {
+      console.error('safeExtractAndParseJson: JSON repair failed.', repairError);
+      parsed = null;
+    }
   }
+
+  if (parsed && typeof parsed === 'object' && schema) {
+    parsed = normalizeJsonKeys(parsed, schema);
+  }
+
+  let defaults = fallback;
+  if (schema) {
+    const schemaDefaults = getDefaultValueFromSchema(schema);
+    defaults = defaults ? { ...schemaDefaults, ...defaults } : schemaDefaults;
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return defaults || {};
+  }
+
+  if (defaults) {
+    return mergeWithDefaults(parsed, defaults);
+  }
+  return parsed;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 300000) {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => controller.abort());
+  }
+  
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  
+  try {
+    const response = await fetch(url, { ...options, signal });
+    return response;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs / 1000} seconds`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function convertSchemaToStandard(schema) {
+  if (!schema || typeof schema !== 'object') return schema;
+  
+  const newSchema = Array.isArray(schema) ? [] : {};
+  for (const key in schema) {
+    if (key === 'type' && typeof schema[key] === 'string') {
+      newSchema[key] = schema[key].toLowerCase();
+    } else if (typeof schema[key] === 'object') {
+      newSchema[key] = convertSchemaToStandard(schema[key]);
+    } else {
+      newSchema[key] = schema[key];
+    }
+  }
+  return newSchema;
+}
+
+function getCompactSchemaInstructions(schema) {
+  if (!schema) return '';
+  let inst = '\n\nRESPOND WITH A SINGLE JSON OBJECT containing these exact keys:\n';
+  
+  function formatProperties(properties) {
+    let props = [];
+    for (const key in properties) {
+      const prop = properties[key];
+      let typeStr = prop.type || 'string';
+      let desc = prop.description ? `(${prop.description})` : '';
+      
+      if (typeStr.toUpperCase() === 'ARRAY') {
+        const itemType = prop.items?.type || 'string';
+        if (itemType.toUpperCase() === 'OBJECT' && prop.items?.properties) {
+          props.push(`"${key}": [ {${formatProperties(prop.items.properties)}} ] ${desc}`);
+        } else {
+          props.push(`"${key}": [ ${itemType.toLowerCase()} ] ${desc}`);
+        }
+      } else if (typeStr.toUpperCase() === 'OBJECT') {
+        if (prop.properties) {
+          props.push(`"${key}": {${formatProperties(prop.properties)}} ${desc}`);
+        } else {
+          props.push(`"${key}": object ${desc}`);
+        }
+      } else {
+        props.push(`"${key}": ${typeStr.toLowerCase()} ${desc}`);
+      }
+    }
+    return props.join(', ');
+  }
+
+  if (schema.properties) {
+    inst += `{ ${formatProperties(schema.properties)} }`;
+  }
+  
+  inst += '\nIMPORTANT: Return ONLY raw JSON, no markdown, no explanations.';
+  return inst;
 }
 
 /**
  * Helper to call the configured AI Provider via direct HTTP POST.
  */
-async function callAIProvider(prompt, systemInstruction = '', schema = null) {
+async function callAIProvider(prompt, systemInstruction = '', schema = null, pdfBase64 = null) {
   let settings = null;
   try {
     settings = await Settings.findById('global');
@@ -78,14 +406,14 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
         });
       }
 
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)
-      });
+      }, 300000);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -98,8 +426,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
         throw new Error('Gemini AI API returned an empty response.');
       }
 
-      const cleanedText = cleanJsonResponse(text);
-      return schema ? safeParseJson(text, cleanedText) : cleanedText;
+      return schema ? safeExtractAndParseJson(text, schema) : cleanJsonResponse(text);
     } else {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
@@ -107,12 +434,14 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
         contents: [
           {
             parts: [
+              ...(pdfBase64 ? [{ inlineData: { mimeType: 'application/pdf', data: pdfBase64 } }] : []),
               { text: prompt }
             ]
           }
         ],
         generationConfig: {
-          temperature: 0.1
+          temperature: 0.1,
+          maxOutputTokens: 8192
         }
       };
 
@@ -127,13 +456,13 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
         requestBody.generationConfig.responseSchema = schema;
       }
 
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)
-      });
+      }, 300000);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -146,7 +475,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
         throw new Error('Gemini API returned an empty response.');
       }
 
-      return schema ? safeParseJson(text, text) : text;
+      return schema ? safeExtractAndParseJson(text, schema) : text;
     }
   } else if (aiProvider === 'openai') {
     const apiKey = settings?.openaiApiKey || process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY;
@@ -157,8 +486,9 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
     const isOpenRouter = apiKey.startsWith('sk-or-');
     const url = isOpenRouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions';
     
-    const userContent = schema 
-      ? `${prompt}\n\nOutput MUST be valid JSON matching the schema: ${JSON.stringify(schema)}\nDo not include any chat prefix or suffix. Return ONLY the raw JSON object.` 
+    const standardSchema = schema ? convertSchemaToStandard(schema) : null;
+    const userContent = standardSchema 
+      ? `${prompt}\n\nOutput MUST be valid JSON matching the schema: ${JSON.stringify(standardSchema)}\nDo not include any chat prefix or suffix. Return ONLY the raw JSON object.` 
       : prompt;
 
     const requestBody = {
@@ -171,24 +501,24 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
       max_tokens: 8192
     };
 
-    if (schema) {
+    if (standardSchema) {
       requestBody.response_format = { type: 'json_object' };
       if (isOpenRouter) {
         requestBody.messages.push({
           role: 'user',
-          content: `Output MUST match JSON schema: ${JSON.stringify(schema)}`
+          content: `Output MUST match JSON schema: ${JSON.stringify(standardSchema)}`
         });
       }
     }
 
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(requestBody)
-    });
+    }, 300000);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -201,8 +531,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
       throw new Error('OpenAI API returned an empty response.');
     }
 
-    const cleanedText = cleanJsonResponse(text);
-    return schema ? safeParseJson(text, cleanedText) : cleanedText;
+    return schema ? safeExtractAndParseJson(text, schema) : cleanJsonResponse(text);
   } else if (aiProvider === 'claude') {
     const apiKey = settings?.claudeApiKey || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
@@ -211,8 +540,9 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
 
     const isOpenRouter = apiKey.startsWith('sk-or-');
     const url = isOpenRouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.anthropic.com/v1/messages';
-    const userContent = schema 
-      ? `${prompt}\n\nOutput MUST be valid JSON matching the schema: ${JSON.stringify(schema)}\nDo not include any chat prefix or suffix. Return ONLY the raw JSON object.` 
+    const standardSchema = schema ? convertSchemaToStandard(schema) : null;
+    const userContent = standardSchema 
+      ? `${prompt}\n\nOutput MUST be valid JSON matching the schema: ${JSON.stringify(standardSchema)}\nDo not include any chat prefix or suffix. Return ONLY the raw JSON object.` 
       : prompt;
 
     let response;
@@ -224,25 +554,25 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
           { role: 'user', content: userContent }
         ],
         temperature: 0.1,
-        max_tokens: 8000
+        max_tokens: 8192
       };
 
-      if (schema) {
+      if (standardSchema) {
         requestBody.response_format = { type: 'json_object' };
         requestBody.messages.push({
           role: 'user',
-          content: `Output MUST match JSON schema: ${JSON.stringify(schema)}`
+          content: `Output MUST match JSON schema: ${JSON.stringify(standardSchema)}`
         });
       }
 
-      response = await fetch(url, {
+      response = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)
-      });
+      }, 300000);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -255,21 +585,36 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
         throw new Error('Claude API returned an empty response.');
       }
 
-      const cleanedText = cleanJsonResponse(text);
-      return schema ? safeParseJson(text, cleanedText) : cleanedText;
+      return schema ? safeExtractAndParseJson(text, schema) : cleanJsonResponse(text);
 
     } else {
       const requestBody = {
         model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 8000,
+        max_tokens: 8192,
         system: systemInstruction || undefined,
         messages: [
-          { role: 'user', content: userContent }
+          {
+            role: 'user',
+            content: pdfBase64 ? [
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: pdfBase64
+                }
+              },
+              {
+                type: 'text',
+                text: userContent
+              }
+            ] : userContent
+          }
         ],
         temperature: 0.1
       };
 
-      response = await fetch(url, {
+      response = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'x-api-key': apiKey,
@@ -277,7 +622,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)
-      });
+      }, 300000);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -290,27 +635,32 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
         throw new Error('Claude API returned an empty response.');
       }
 
-      const cleanedText = cleanJsonResponse(text);
-      return schema ? safeParseJson(text, cleanedText) : cleanedText;
+      return schema ? safeExtractAndParseJson(text, schema) : cleanJsonResponse(text);
     }
   } else if (aiProvider === 'ollama') {
-    const ollamaUrl = settings?.ollamaUrl || 'http://localhost:11434';
-    const model = settings?.ollamaModel || 'llama3';
+    const ollamaUrl = (settings?.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '');
+    const ollamaModel = settings?.ollamaModel || 'llama3';
 
-    const url = `${ollamaUrl.replace(/\/$/, '')}/api/chat`;
-    const userContent = schema 
-      ? `${prompt}\n\nOutput MUST be valid JSON matching the schema: ${JSON.stringify(schema)}\nDo not include any chat prefix or suffix. Return ONLY the raw JSON object.` 
-      : prompt;
+    // For Ollama: merge a compact format instruction into the user prompt
+    // instead of sending the massive raw JSON schema as a separate message
+    let userContent = prompt;
+    if (schema) {
+      userContent += getCompactSchemaInstructions(schema);
+    }
+
+    const messages = [
+      ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
+      { role: 'user', content: userContent }
+    ];
 
     const requestBody = {
-      model: model,
-      messages: [
-        ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
-        { role: 'user', content: userContent }
-      ],
+      model: ollamaModel,
+      messages,
       stream: false,
       options: {
-        temperature: 0.1
+        temperature: 0.1,
+        num_ctx: 8192,
+        num_predict: 2048
       }
     };
 
@@ -318,35 +668,95 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null) {
       requestBody.format = 'json';
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
-    });
+    const ollamaFetch = async (body) => {
+      try {
+        const response = await fetchWithTimeout(`${ollamaUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        }, 900000);
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Ollama API error: ${response.status} - ${errorText}`);
+        }
+        return await response.json();
+      } catch (err) {
+        if (err.message.includes('timed out')) {
+          throw new Error('Ollama request timed out after 15 minutes. The model may be overloaded or the resume is too large.');
+        }
+        throw err;
+      }
+    };
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Ollama API error: ${response.status} - ${errorText}`);
-    }
-
-    const result = await response.json();
-    const text = result.message?.content;
+    let result = await ollamaFetch(requestBody);
+    let text = result.message?.content;
+    
+    // If the model returned an empty response, retry without format:'json' constraint
     if (!text) {
-      throw new Error('Ollama API returned an empty response.');
+      console.warn('Ollama: Empty response on first attempt. Raw result:', JSON.stringify(result).substring(0, 500));
+      console.warn('Ollama: Retrying without format:json constraint...');
+      const retryBody = { ...requestBody };
+      delete retryBody.format;
+      // Add explicit JSON instruction to user message instead
+      if (schema) {
+        retryBody.messages = [
+          ...retryBody.messages,
+          { role: 'user', content: 'You MUST respond with valid JSON only. No markdown, no explanation, no code fences. Just the raw JSON object.' }
+        ];
+      }
+      result = await ollamaFetch(retryBody);
+      text = result.message?.content;
+      if (!text) {
+        console.error('Ollama: Empty response on retry as well. Full result:', JSON.stringify(result).substring(0, 1000));
+        throw new Error('Ollama API returned an empty response. The model may not support this request format. Try a different model (e.g., llama3, qwen2).');
+      }
     }
 
-    const cleanedText = cleanJsonResponse(text);
-    return schema ? safeParseJson(text, cleanedText) : cleanedText;
+    // Detect truncated JSON: if we expected JSON but the response is cut off, try to repair it locally first or retry once with higher limit
+    if (schema) {
+      try {
+        const testClean = cleanJsonResponse(text);
+        JSON.parse(testClean);
+      } catch (truncErr) {
+        if (truncErr.message.includes('Unterminated') || truncErr.message.includes('Unexpected end')) {
+          const testClean = cleanJsonResponse(text);
+          console.warn('Ollama: Response appears truncated. Attempting to repair JSON locally first...');
+          try {
+            const repaired = statefulJsonRepair(testClean);
+            JSON.parse(repaired);
+            console.log('Ollama: Local JSON repair successful! Skipping API retry.');
+            text = repaired;
+          } catch (repairErr) {
+            console.warn('Ollama: Local JSON repair failed. Retrying API request with extended token limit...');
+            requestBody.options.num_predict = 4096;
+            try {
+              result = await ollamaFetch(requestBody);
+              const newText = result.message?.content;
+              if (newText) {
+                text = newText;
+              } else {
+                console.warn('Ollama: API retry returned empty. Falling back to repaired first attempt.');
+                text = statefulJsonRepair(testClean);
+              }
+            } catch (retryFetchErr) {
+              console.error('Ollama: API retry failed:', retryFetchErr);
+              console.warn('Ollama: Falling back to repaired first attempt.');
+              text = statefulJsonRepair(testClean);
+            }
+          }
+        }
+      }
+    }
+
+    return schema ? safeExtractAndParseJson(text, schema) : cleanJsonResponse(text);
   } else {
     throw new Error(`Unsupported AI Provider: ${aiProvider}`);
   }
 }
 
 function mapAnalysisToQuestions(parsedData) {
-  const hrQuestions = [];
-  const technicalQuestions = [];
+  let hrQuestions = [];
+  let technicalQuestions = [];
 
   // 1. Map Career Gaps to HR
   if (parsedData.career_gaps && Array.isArray(parsedData.career_gaps)) {
@@ -354,7 +764,8 @@ function mapAnalysisToQuestions(parsedData) {
       if (gap.interview_question && gap.sample_answer) {
         hrQuestions.push({
           question: gap.interview_question,
-          answer: gap.sample_answer
+          answer: gap.sample_answer,
+          importance: 'MUST ASK'
         });
       }
     });
@@ -366,7 +777,8 @@ function mapAnalysisToQuestions(parsedData) {
       if (q.question && q.sample_answer) {
         hrQuestions.push({
           question: q.question,
-          answer: q.sample_answer
+          answer: q.sample_answer,
+          importance: 'GOOD TO ASK'
         });
       }
     });
@@ -378,7 +790,8 @@ function mapAnalysisToQuestions(parsedData) {
       if (!audit.has_depth && audit.probing_question && audit.answer_template) {
         technicalQuestions.push({
           question: audit.probing_question,
-          answer: audit.answer_template
+          answer: audit.answer_template,
+          importance: 'VERY IMPORTANT'
         });
       }
     });
@@ -390,7 +803,8 @@ function mapAnalysisToQuestions(parsedData) {
       if (q.question && q.model_answer) {
         technicalQuestions.push({
           question: q.question,
-          answer: q.model_answer
+          answer: q.model_answer,
+          importance: 'GOOD TO ASK'
         });
       }
     });
@@ -404,7 +818,8 @@ function mapAnalysisToQuestions(parsedData) {
           if (q.question && q.model_answer) {
             technicalQuestions.push({
               question: q.question,
-              answer: q.model_answer
+              answer: q.model_answer,
+              importance: 'IMPORTANT'
             });
           }
         });
@@ -412,23 +827,47 @@ function mapAnalysisToQuestions(parsedData) {
     });
   }
 
-  // Fallback: Ensure at least 5 questions exist for both
-  if (hrQuestions.length < 5) {
-    if (parsedData.interviewQuestions && Array.isArray(parsedData.interviewQuestions)) {
-      parsedData.interviewQuestions.forEach(q => {
-        if (hrQuestions.length < 5) {
-          hrQuestions.push({ question: q, answer: "No sample answer available." });
-        }
-      });
-    }
-    while (hrQuestions.length < 5) {
-      hrQuestions.push({ question: `Tell me about your background and how it prepares you for this role?`, answer: "I have a solid foundation in software development and have successfully delivered projects in my previous roles." });
+  // Slice or fill to exactly 7 HR questions
+  if (hrQuestions.length > 7) {
+    hrQuestions = hrQuestions.slice(0, 7);
+  } else {
+    const defaultHr = [
+      { question: "Tell me about your background and how it prepares you for this role?", answer: "I have a solid foundation in my field, have successfully delivered key projects in my previous roles, and quickly adapt to new stacks.", importance: "OPTIONAL" },
+      { question: "Why are you interested in joining our company?", answer: "I admire your company's innovation, culture, and project scale, and believe my skills align perfectly with your team's goals.", importance: "OPTIONAL" },
+      { question: "Describe a challenging situation at work and how you resolved it.", answer: "I faced a critical bug/blocker, analyzed the root cause, collaborated with the team, and deployed a resolution under pressure.", importance: "OPTIONAL" },
+      { question: "Where do you see yourself in five years?", answer: "I aim to grow technically, take on architectural ownership, and mentor junior colleagues while contributing to core business goals.", importance: "OPTIONAL" },
+      { question: "How do you handle disagreement within a technical team?", answer: "I present data, listen to other viewpoints objectively, and focus on the best solution for the project rather than personal opinion.", importance: "OPTIONAL" },
+      { question: "What are your salary expectations?", answer: "I am open to a competitive offer based on the role's responsibilities, my experience, and market standards.", importance: "OPTIONAL" },
+      { question: "Do you have any questions for us?", answer: "What are the biggest challenges the team is currently facing, and what does success look like in this role?", importance: "OPTIONAL" }
+    ];
+    let idx = 0;
+    while (hrQuestions.length < 7 && idx < defaultHr.length) {
+      if (!hrQuestions.some(q => q.question === defaultHr[idx].question)) {
+        hrQuestions.push(defaultHr[idx]);
+      }
+      idx++;
     }
   }
 
-  if (technicalQuestions.length < 5) {
-    while (technicalQuestions.length < 5) {
-      technicalQuestions.push({ question: `What is your technical stack and how do you decide which technology to use?`, answer: "I prioritize technology based on scalability, maintainability, team familiarity, and the specific needs of the project." });
+  // Slice or fill to exactly 7 Technical questions
+  if (technicalQuestions.length > 7) {
+    technicalQuestions = technicalQuestions.slice(0, 7);
+  } else {
+    const defaultTech = [
+      { question: "What is your primary technical stack and how do you decide which technology to use?", answer: "I prioritize technology based on scalability, maintainability, team familiarity, and the specific needs of the project.", importance: "OPTIONAL" },
+      { question: "How do you ensure code quality and prevent bugs in production?", answer: "I write comprehensive unit tests, perform thorough code reviews, use CI/CD pipelines, and monitor system telemetry.", importance: "OPTIONAL" },
+      { question: "Explain the difference between SQL and NoSQL databases, and when to use each.", answer: "Use SQL for structured, relational data with ACID compliance; use NoSQL for unstructured, high-throughput, horizontally scalable data.", importance: "OPTIONAL" },
+      { question: "How do you optimize a slow database query or application bottleneck?", answer: "I profile execution plans, add appropriate database indexes, implement caching, and optimize algorithmic complexity.", importance: "OPTIONAL" },
+      { question: "What is your approach to designing microservices or modular systems?", answer: "I design around domain-driven boundaries, ensure loose coupling, use asynchronous messaging, and prioritize API contract versioning.", importance: "OPTIONAL" },
+      { question: "Describe your experience with cloud services and infrastructure-as-code.", answer: "I use AWS/GCP services for hosting, compute, and storage, and automate provisioning using tools like Terraform or CloudFormation.", importance: "OPTIONAL" },
+      { question: "How do you stay up-to-date with new technologies and industry trends?", answer: "I read technical blogs, contribute to open source projects, build personal side-projects, and participate in developer communities.", importance: "OPTIONAL" }
+    ];
+    let idx = 0;
+    while (technicalQuestions.length < 7 && idx < defaultTech.length) {
+      if (!technicalQuestions.some(q => q.question === defaultTech[idx].question)) {
+        technicalQuestions.push(defaultTech[idx]);
+      }
+      idx++;
     }
   }
 
@@ -436,54 +875,71 @@ function mapAnalysisToQuestions(parsedData) {
   parsedData.technicalQuestions = technicalQuestions;
 }
 
-/**
- * Parses resume text into structured JSON format.
- */
-export async function parseResume(resumeText) {
-  if (!resumeText || resumeText.trim().length === 0) {
-    throw new Error('Failed to extract text from PDF. The resume might be an image or a scanned document.');
+function getRecruiterSystemInstruction(aiProvider) {
+  if (aiProvider === 'ollama') {
+    return `You are a senior technical recruiter. Analyze the resume facts and generate a structured JSON analysis.
+1. Timeline & Gaps: Flag any gap >= 2 months. Include date range, length, probe question, and sample answer.
+2. Technical Audit: List skills, judge if backed by specifics. Generate probing questions and sample answers for shallow skills.
+3. Domain Bank: Generate EXACTLY 7 domain/technical questions (calibrated to seniority) with model answers.
+4. Project & Achievement Deep-Dive: Write 1-2 probe questions for claims/projects with model answers. Identify and highlight specific projects the candidate has completed that match their skills.
+5. HR & Behavioral: Generate EXACTLY 7 standard HR questions personalized with resume facts, plus model answers.
+6. Red Flags: List quality issues (severity, fix suggestion).
+7. Must-Prepare & Fit: Generate a checklist of 6-10 topics and a brief "why hire" summary.
+8. Projects: List projects completed by the candidate (name, description, skills used).
+CRITICAL: If you find a LinkedIn URL with OCR typos (e.g. "iinkedin" -> "linkedin"), fix the typo. Extract ALL data strictly from the resume text provided. Do NOT use any names, emails, or details from these instructions as candidate data.`;
   }
+  return `You are a senior technical recruiter and hiring-panel interviewer. You have spent years interviewing candidates across multiple domains and you are known for catching exactly the things a resume tries to gloss over. When given a resume, you produce a detailed, structured analysis — never a generic summary. You ground every observation in specific facts from the resume (exact dates, company names, tools, numbers). You never invent facts that are not in the resume; if something is unclear, say so and ask about it.
 
-  const systemInstruction = `You are a senior technical recruiter and hiring-panel interviewer. You have spent years interviewing candidates across multiple domains and you are known for catching exactly the things a resume tries to gloss over. When given a resume, you produce a detailed, structured analysis — never a generic summary. You ground every observation in specific facts from the resume (exact dates, company names, tools, numbers). You never invent facts that are not in the resume; if something is unclear, say so and ask about it.
-
-Run the following seven-part analysis on every resume, in order.
+Run the following eight-part analysis on every resume, in order.
 
 ### 1. Career Timeline & Gap Analysis
 - Reconstruct the candidate's full timeline: education end dates, every job's start/end date, and any stated career breaks.
 - Flag any gap of 2+ months between two consecutive entries (job-to-job, or education-to-first-job).
-- For each gap, output: the exact date range, its length, one direct interview question the candidate should expect (e.g. "Can you walk me through what you were doing between [Month Year] and [Month Year]?"), and a sample answer the candidate could give — framed around plausible, positive explanations (upskilling, freelance work, family/health reasons, job search) rather than inventing a specific real reason you don't know.
-- If there are no gaps, state that explicitly — don't invent one.
+- For each gap, output: the exact date range, its length, one direct interview question the candidate should expect, and a sample answer.
+- If there are no gaps, state that explicitly.
 
 ### 2. Technical Depth Audit
 - List every tool, technology, platform, or skill the resume names.
-- For each one, judge whether it's backed by specifics (versions, named sub-components/services, scale, or outcome) or just name-dropped with no detail.
-- For every skill that's name-dropped without depth, write one targeted question that would force the candidate to prove real hands-on experience (e.g. "You list AWS — which specific services did you use, and for what?"), plus a short answer template showing what a strong, specific answer should cover so the candidate knows how to fill in their own real details.
-- Do not flag a skill as shallow if the resume already gives a concrete example of its use.
+- For each one, judge whether it's backed by specifics (versions, named sub-components/services, scale, or outcome) or just name-dropped.
+- For every skill that's name-dropped without depth, write one targeted probing question plus a short answer template showing what a strong answer should cover.
 
 ### 3. Domain Knowledge Question Bank
-- Identify the candidate's primary domain/specialty from their skills and job titles.
-- Generate 8–15 domain concept questions a panel would realistically ask someone at this candidate's seniority level, ordered from fundamental to advanced.
-- Provide a model answer (2–4 sentences) for each question, written the way a strong candidate would actually answer — not textbook definitions.
-- Calibrate difficulty to the candidate's years of experience: a 2-year candidate gets foundational questions; an 8-year candidate gets architecture/trade-off questions.
+- Generate EXACTLY 7 domain/technical concept questions a panel would realistically ask someone at this candidate's seniority level, ordered from fundamental to advanced.
+- Provide a model answer (2–4 sentences) for each question.
 
 ### 4. Project & Achievement Deep-Dive
-- For each project or major responsibility listed, write one or two "prove it" follow-up questions that target the specific claim made (especially any number, percentage, or outcome stated), each with a model answer showing how a candidate who genuinely did the work would answer (referencing the method, tools, and result) — written from the resume's own details, not invented specifics beyond what's plausible.
-- Prioritize claims that sound impressive but are unsupported (e.g. a stated accuracy percentage, a scale claim, a "led the team" claim) — these get the most scrutiny.
+- For each project or major responsibility listed, write one or two "prove it" follow-up questions targeting specific claims/projects, each with a model answer showing how a candidate who did the work would answer. Identify and highlight specific projects the candidate has completed that match their skills.
 
 ### 5. HR & Behavioral Readiness
-- Generate the standard HR question set, personalized with the candidate's actual details where possible: tell me about yourself; reason for leaving current/most recent company (use the actual company name); reason for seeking a new role; current vs. expected compensation; why should we hire you; key strengths; 5-year vision; reason for any job change pattern observed.
-- For each question, give a sample answer built from the candidate's actual resume facts (companies, titles, skills, tenure) wherever possible. Where the real reason isn't knowable (e.g. why they're leaving), give a professional, plausible answer rather than a fabricated specific reason.
-- If question 1 already surfaced a gap, reuse that gap's specific dates here too instead of a generic gap question.
+- Generate EXACTLY 7 standard HR questions, personalized with the candidate's actual details: tell me about yourself; reason for leaving most recent company; reason for seeking a new role; expected compensation; why hire you; key strengths; 5-year vision. Provide sample answers built from the candidate's actual resume facts.
 
 ### 6. Resume Red Flags & Quality Check
-- Call out concrete quality issues only if actually present, such as: missing company names, missing certifications relevant to the field, no quantified outcomes anywhere, inconsistent or ambiguous dates, very short tenures without explanation, or skills listed with zero supporting context anywhere in the document.
-- Mark each flag with a severity (minor / moderate / major) and a one-line fix suggestion.
+- Call out concrete quality issues if present (severity, fix suggestion).
 
 ### 7. Must-Prepare Topics & Fit Summary
-- Produce a checklist of 6–10 core topics this candidate should be ready to go deep on, derived from their actual listed skills (not a generic list for the field in general).
-- Close with a 2–3 sentence "why hire" pitch written in the candidate's own voice, using only facts present in the resume — this is what a well-prepared candidate could say in response to "why should we hire you."
+- Produce a checklist of 6–10 core topics this candidate should prepare, and a 2-3 sentence "why hire" pitch.
 
-CRITICAL FOR LINKEDIN URL: The input text is from an OCR engine and may contain a two-column layout, meaning lines are read horizontally across columns. A LinkedIn URL like "wwwiinkedin.com/in/jayav" might be broken into multiple lines and split by other text (e.g., "arapu-sri-charan-" and "43273137b" appearing later). You MUST find all parts of the split LinkedIn URL, merge them, correct any OCR typos (such as "iinkedin" -> "linkedin"), and output the full correct URL (e.g. "https://www.linkedin.com/in/jayavarapu-sri-charan-43273137b").`;
+### 8. Projects & Skills Mapping
+- List the candidate's projects. For each project, extract its name, description, and the matching skills/technologies from the candidate's skill list used in that project.
+
+CRITICAL: Extract ALL candidate data (name, email, phone, skills, experience, projects) strictly from the resume text provided below. Do NOT use any names, examples, or details from these instructions as candidate data. If a LinkedIn URL contains OCR typos, fix the typo and reconstruct the full URL.`;
+}
+
+/**
+ * Parses resume text into structured JSON format.
+ */
+export async function parseResume(resumeText, pdfBase64 = null) {
+  if ((!resumeText || resumeText.trim().length === 0) && !pdfBase64) {
+    throw new Error('Failed to extract text from PDF. The resume might be an image or a scanned document.');
+  }
+
+  let settings = null;
+  try {
+    settings = await Settings.findById('global');
+  } catch (e) {}
+  const aiProvider = settings?.aiProvider || 'gemini';
+
+  const systemInstruction = getRecruiterSystemInstruction(aiProvider);
   
   const schema = {
     type: 'OBJECT',
@@ -493,7 +949,7 @@ CRITICAL FOR LINKEDIN URL: The input text is from an OCR engine and may contain 
       phone: { type: 'STRING', description: 'Phone number' },
       linkedinUrl: { 
         type: 'STRING', 
-        description: 'Reconstructed and corrected full LinkedIn profile URL (e.g. https://www.linkedin.com/in/jayavarapu-sri-charan-43273137b). Correct OCR typos like "iinkedin" to "linkedin". Return empty string if not present.' 
+        description: 'Full LinkedIn profile URL found in the resume. Fix OCR typos like "iinkedin" to "linkedin". Return empty string if not present.' 
       },
       skills: {
         type: 'ARRAY',
@@ -621,13 +1077,37 @@ CRITICAL FOR LINKEDIN URL: The input text is from an OCR engine and may contain 
         type: 'ARRAY',
         items: { type: 'STRING' }
       },
-      fit_summary: { type: 'STRING' }
+      fit_summary: { type: 'STRING' },
+      projects: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            name: { type: 'STRING', description: 'Name of the project' },
+            description: { type: 'STRING', description: 'Brief description of what the project did and accomplishments' },
+            matchingSkills: {
+              type: 'ARRAY',
+              items: { type: 'STRING' },
+              description: 'Skills or technologies from the candidate\'s skill list used in this project'
+            }
+          },
+          required: ['name', 'description', 'matchingSkills']
+        }
+      }
     },
-    required: ['name', 'email', 'skills', 'experience', 'education', 'seniorityLevel', 'interviewQuestions', 'career_gaps', 'technical_depth_audit', 'domain_question_bank', 'project_deep_dive', 'hr_questions', 'red_flags', 'must_prepare_topics', 'fit_summary']
+    required: ['name', 'email', 'skills', 'experience', 'education', 'seniorityLevel', 'interviewQuestions', 'career_gaps', 'technical_depth_audit', 'domain_question_bank', 'project_deep_dive', 'hr_questions', 'red_flags', 'must_prepare_topics', 'fit_summary', 'projects']
   };
 
-  const prompt = `Parse this resume text and perform the recruiter seven-part analysis:\n\n${resumeText}`;
-  const parsedData = await callAIProvider(prompt, systemInstruction, schema);
+  const apiKey = settings?.geminiApiKey || process.env.GEMINI_API_KEY;
+  const isOpenRouter = apiKey?.startsWith('sk-or-') || false;
+  const isDirectGemini = aiProvider === 'gemini' && !isOpenRouter;
+  const isClaude = aiProvider === 'claude';
+  const canUsePdfDirectly = isDirectGemini || (isClaude && !isOpenRouter);
+
+  const prompt = (pdfBase64 && canUsePdfDirectly)
+    ? `Analyze the attached PDF resume and perform the recruiter seven-part analysis.`
+    : `Parse this resume text and perform the recruiter seven-part analysis:\n\n${resumeText}`;
+  const parsedData = await callAIProvider(prompt, systemInstruction, schema, canUsePdfDirectly ? pdfBase64 : null);
   mapAnalysisToQuestions(parsedData);
   return parsedData;
 }
@@ -800,44 +1280,13 @@ Key Skills/Keywords: ${skills || 'standard requirements for this role'}
 }
 
 export async function generateQuestionsForCandidate(candidateProfile, jobDescription = null) {
-  const systemInstruction = `You are a senior technical recruiter and hiring-panel interviewer. You have spent years interviewing candidates across multiple domains and you are known for catching exactly the things a resume tries to gloss over. When given a resume, you produce a detailed, structured analysis — never a generic summary. You ground every observation in specific facts from the resume (exact dates, company names, tools, numbers). You never invent facts that are not in the resume; if something is unclear, say so and ask about it.
+  let settings = null;
+  try {
+    settings = await Settings.findById('global');
+  } catch (e) {}
+  const aiProvider = settings?.aiProvider || 'gemini';
 
-Run the following seven-part analysis on every resume, in order.
-
-### 1. Career Timeline & Gap Analysis
-- Reconstruct the candidate's full timeline: education end dates, every job's start/end date, and any stated career breaks.
-- Flag any gap of 2+ months between two consecutive entries (job-to-job, or education-to-first-job).
-- For each gap, output: the exact date range, its length, one direct interview question the candidate should expect, and a sample answer the candidate could give — framed around plausible, positive explanations rather than inventing a specific real reason you don't know.
-- If there are no gaps, state that explicitly — don't invent one.
-
-### 2. Technical Depth Audit
-- List every tool, technology, platform, or skill the resume names.
-- For each one, judge whether it's backed by specifics (versions, named sub-components/services, scale, or outcome) or just name-dropped with no detail.
-- For every skill that's name-dropped without depth, write one targeted question that would force the candidate to prove real hands-on experience, plus a short answer template showing what a strong, specific answer should cover so the candidate knows how to fill in their own real details.
-- Do not flag a skill as shallow if the resume already gives a concrete example of its use.
-
-### 3. Domain Knowledge Question Bank
-- Identify the candidate's primary domain/specialty from their skills and job titles.
-- Generate 8–15 domain concept questions a panel would realistically ask someone at this candidate's seniority level, ordered from fundamental to advanced.
-- Provide a model answer (2–4 sentences) for each question, written the way a strong candidate would actually answer — not textbook definitions.
-- Calibrate difficulty to the candidate's years of experience.
-
-### 4. Project & Achievement Deep-Dive
-- For each project or major responsibility listed, write one or two "prove it" follow-up questions that target the specific claim made (especially any number, percentage, or outcome stated), each with a model answer showing how a candidate who genuinely did the work would answer — written from the resume's own details, not invented specifics beyond what's plausible.
-- Prioritize claims that sound impressive but are unsupported (e.g. a stated accuracy percentage, a scale claim, a "led the team" claim) — these get the most scrutiny.
-
-### 5. HR & Behavioral Readiness
-- Generate the standard HR question set, personalized with the candidate's actual details where possible: tell me about yourself; reason for leaving current/most recent company; reason for seeking a new role; current vs. expected compensation; why should we hire you; key strengths; 5-year vision; reason for any job change pattern observed.
-- For each question, give a sample answer built from the candidate's actual resume facts wherever possible. Where the real reason isn't knowable, give a professional, plausible answer.
-- If question 1 already surfaced a gap, reuse that gap's specific dates here too instead of a generic gap question.
-
-### 6. Resume Red Flags & Quality Check
-- Call out concrete quality issues only if actually present, such as: missing company names, missing certifications relevant to the field, no quantified outcomes anywhere, inconsistent or ambiguous dates, very short tenures without explanation, or skills listed with zero supporting context.
-- Mark each flag with a severity (minor / moderate / major) and a one-line fix suggestion.
-
-### 7. Must-Prepare Topics & Fit Summary
-- Produce a checklist of 6–10 core topics this candidate should be ready to go deep on, derived from their actual listed skills.
-- Close with a 2–3 sentence "why hire" pitch written in the candidate's own voice, using only facts present in the resume.`;
+  const systemInstruction = getRecruiterSystemInstruction(aiProvider);
 
   const schema = {
     type: 'OBJECT',

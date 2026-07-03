@@ -1,16 +1,160 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Briefcase, Mail, Phone, GraduationCap, Building2, Calendar, Sparkles, Check, CheckCircle2, XCircle, AlertCircle, Send, ArrowRight, Tag, Trash2, Eye } from 'lucide-react';
 
-export default function CandidateDetails({ candidate, job, onClose, onOpenEmailModal, onStageChanged, onCandidateDeleted, backendUrl, rankAccordingToJob, currentRole }) {
+const getQuestionStyles = (importance) => {
+  const imp = (importance || '').toUpperCase();
+  switch (imp) {
+    case 'MUST ASK':
+      return {
+        badgeText: '🔴 MUST ASK',
+        badgeBg: 'rgba(239, 68, 68, 0.15)',
+        badgeColor: '#f87171',
+        badgeBorder: '1px solid rgba(239, 68, 68, 0.25)',
+        cardBg: 'linear-gradient(135deg, rgba(239, 68, 68, 0.05) 0%, rgba(239, 68, 68, 0.01) 100%)',
+        cardBorder: '1px solid rgba(239, 68, 68, 0.35)',
+        indicatorColor: '#ef4444',
+        shadow: '0 0 12px rgba(239, 68, 68, 0.05)'
+      };
+    case 'VERY IMPORTANT':
+      return {
+        badgeText: '🔴 VERY IMPORTANT',
+        badgeBg: 'rgba(244, 63, 94, 0.15)',
+        badgeColor: '#fb7185',
+        badgeBorder: '1px solid rgba(244, 63, 94, 0.25)',
+        cardBg: 'linear-gradient(135deg, rgba(244, 63, 94, 0.05) 0%, rgba(244, 63, 94, 0.01) 100%)',
+        cardBorder: '1px solid rgba(244, 63, 94, 0.35)',
+        indicatorColor: '#f43f5e',
+        shadow: '0 0 12px rgba(244, 63, 94, 0.05)'
+      };
+    case 'IMPORTANT':
+      return {
+        badgeText: '🟠 IMPORTANT',
+        badgeBg: 'rgba(249, 115, 22, 0.15)',
+        badgeColor: '#fdba74',
+        badgeBorder: '1px solid rgba(249, 115, 22, 0.25)',
+        cardBg: 'linear-gradient(135deg, rgba(249, 115, 22, 0.04) 0%, rgba(249, 115, 22, 0.01) 100%)',
+        cardBorder: '1px solid rgba(249, 115, 22, 0.3)',
+        indicatorColor: '#f97316',
+        shadow: 'none'
+      };
+    case 'GOOD TO ASK':
+      return {
+        badgeText: '🟡 GOOD TO ASK',
+        badgeBg: 'rgba(234, 179, 8, 0.15)',
+        badgeColor: '#fef08a',
+        badgeBorder: '1px solid rgba(234, 179, 8, 0.2)',
+        cardBg: 'linear-gradient(135deg, rgba(234, 179, 8, 0.03) 0%, rgba(234, 179, 8, 0.01) 100%)',
+        cardBorder: '1px solid rgba(234, 179, 8, 0.25)',
+        indicatorColor: '#eab308',
+        shadow: 'none'
+      };
+    case 'OPTIONAL':
+    default:
+      return {
+        badgeText: '🟢 OPTIONAL',
+        badgeBg: 'rgba(34, 197, 94, 0.12)',
+        badgeColor: '#86efac',
+        badgeBorder: '1px solid rgba(34, 197, 94, 0.15)',
+        cardBg: 'linear-gradient(135deg, rgba(34, 197, 94, 0.02) 0%, rgba(34, 197, 94, 0.005) 100%)',
+        cardBorder: '1px solid rgba(34, 197, 94, 0.2)',
+        indicatorColor: '#22c55e',
+        shadow: 'none'
+      };
+  }
+};
+
+export default function CandidateDetails({ candidate: propCandidate, job, onClose, onOpenEmailModal, onStageChanged, onCandidateDeleted, backendUrl, rankAccordingToJob, currentRole, token }) {
+  const [candidate, setCandidate] = useState(propCandidate);
+
+  useEffect(() => {
+    setCandidate(propCandidate);
+  }, [propCandidate]);
+
   if (!candidate) return null;
 
   const hasPdf = candidate.resumeUrl || (window.localResumeUrls && window.localResumeUrls[candidate.id]);
   const [rightTab, setRightTab] = useState(hasPdf ? 'pdf' : 'text');
+  const [qaSubTab, setQaSubTab] = useState(candidate.hrQuestions && candidate.hrQuestions.length > 0 ? 'hr' : 'tech');
+  const [managers, setManagers] = useState([]);
+  const [assignedManager, setAssignedManager] = useState(candidate.assignedTo || '');
+  const reScoreLockRef = useRef(null);
 
   useEffect(() => {
     const hasPdfNow = candidate.resumeUrl || (window.localResumeUrls && window.localResumeUrls[candidate.id]);
     setRightTab(hasPdfNow ? 'pdf' : 'text');
+    setQaSubTab(candidate.hrQuestions && candidate.hrQuestions.length > 0 ? 'hr' : 'tech');
   }, [candidate.id, candidate.resumeUrl]);
+
+  // Auto re-score on details open if details are empty
+  useEffect(() => {
+    if (reScoreLockRef.current === candidate.id) return;
+
+    const checkAndReScore = async () => {
+      const hasNoScore = !candidate.ownCategoryExplanation || candidate.ownCategoryExplanation.trim().length === 0;
+      if (hasNoScore) {
+        reScoreLockRef.current = candidate.id;
+        console.log('Competency details missing. Triggering auto re-score...');
+        try {
+          const res = await fetch(`${backendUrl}/api/candidates/${candidate.id}/re-score`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          if (res.ok) {
+            const updatedCandidate = await res.json();
+            setCandidate(updatedCandidate);
+            // Propagate stage or metadata changes if needed
+            if (onStageChanged) {
+              onStageChanged(updatedCandidate.id, updatedCandidate.stage);
+            }
+          }
+        } catch (e) {
+          console.error('Auto re-score failed:', e);
+        }
+      }
+    };
+    checkAndReScore();
+  }, [candidate.id]);
+
+  useEffect(() => {
+    if (currentRole !== 'Hiring Manager') {
+      fetchManagers();
+    }
+  }, [currentRole]);
+
+  const fetchManagers = async () => {
+    try {
+      const res = await fetch(`${backendUrl}/api/auth/managers`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setManagers(data || []);
+      }
+    } catch (e) {
+      console.error('Failed to fetch managers:', e);
+    }
+  };
+
+  const handleAssignManager = async (e) => {
+    const managerEmail = e.target.value;
+    setAssignedManager(managerEmail);
+    try {
+      const res = await fetch(`${backendUrl}/api/candidates/${candidate.id}/assign`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ managerEmail })
+      });
+      if (!res.ok) throw new Error('Failed to assign manager');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to assign hiring manager');
+    }
+  };
 
   // Helper to parse date strings (e.g. "Sep 2024", "Present")
   const parseDateString = (str) => {
@@ -130,10 +274,29 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
   const isGeneralRole = !candidate.jobId || !job;
   const useJobMatch = rankAccordingToJob && !isGeneralRole;
 
-  const score = useJobMatch ? candidate.matchScore : (candidate.ownCategoryScore ?? candidate.matchScore);
-  const reasoning = useJobMatch ? candidate.matchExplanation : (candidate.ownCategoryExplanation ?? candidate.matchExplanation);
-  const matchingSkills = useJobMatch ? candidate.matchingSkills : (candidate.ownCategoryMatchingSkills ?? candidate.matchingSkills);
-  const missingSkills = useJobMatch ? candidate.missingSkills : (candidate.ownCategoryMissingSkills ?? candidate.missingSkills);
+  const score = useJobMatch 
+    ? candidate.matchScore 
+    : (candidate.ownCategoryScore > 0 
+        ? candidate.ownCategoryScore 
+        : (candidate.matchScore || 0));
+
+  const reasoning = useJobMatch 
+    ? candidate.matchExplanation 
+    : (candidate.ownCategoryExplanation && candidate.ownCategoryExplanation.trim().length > 0 
+        ? candidate.ownCategoryExplanation 
+        : (candidate.matchExplanation || 'No evaluation details generated.'));
+
+  const matchingSkills = useJobMatch 
+    ? candidate.matchingSkills 
+    : (candidate.ownCategoryMatchingSkills && candidate.ownCategoryMatchingSkills.length > 0 
+        ? candidate.ownCategoryMatchingSkills 
+        : (candidate.matchingSkills || []));
+
+  const missingSkills = useJobMatch 
+    ? candidate.missingSkills 
+    : (candidate.ownCategoryMissingSkills && candidate.ownCategoryMissingSkills.length > 0 
+        ? candidate.ownCategoryMissingSkills 
+        : (candidate.missingSkills || []));
 
   const scoreColorClass = score >= 80 ? 'score-high' : score >= 50 ? 'score-medium' : 'score-low';
 
@@ -145,7 +308,8 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
       const res = await fetch(`${backendUrl}/api/candidates/${candidate.id}/stage`, {
         method: 'PATCH',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ stage: newStage })
       });
@@ -164,7 +328,10 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
     if (!window.confirm(`Are you absolutely sure? This will permanently delete candidate "${candidate.name}" from the system and cannot be undone.`)) return;
     try {
       const res = await fetch(`${backendUrl}/api/candidates/${candidate.id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
       });
       if (!res.ok) {
         const errData = await res.json();
@@ -174,6 +341,67 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
     } catch (e) {
       console.error(e);
       alert(e.message || 'Error deleting candidate');
+    }
+  };
+
+  const renderResumeContent = () => {
+    if (!candidate.resumeUrl && !(window.localResumeUrls && window.localResumeUrls[candidate.id])) {
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
+          No Resume Available
+        </div>
+      );
+    }
+
+    const getFileType = () => {
+      if (candidate.resumeUrl) {
+        const parts = candidate.resumeUrl.split('?')[0].split('/');
+        const filename = parts[parts.length - 1];
+        if (filename.includes('.')) {
+          return filename.split('.').pop().toLowerCase();
+        }
+      }
+      const localUrl = window.localResumeUrls && window.localResumeUrls[candidate.id];
+      if (localUrl && !localUrl.startsWith('blob:')) {
+        const parts = localUrl.split('?')[0].split('/');
+        const filename = parts[parts.length - 1];
+        if (filename.includes('.')) {
+          return filename.split('.').pop().toLowerCase();
+        }
+      }
+      return '';
+    };
+
+    const resumeSrc = (window.localResumeUrls && window.localResumeUrls[candidate.id]) 
+      ? window.localResumeUrls[candidate.id]
+      : `${backendUrl}${candidate.resumeUrl}`;
+    const ext = getFileType();
+
+    if (ext === 'pdf') {
+      return (
+        <div style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
+          <iframe 
+            src={`${resumeSrc}#toolbar=0&navpanes=0&scrollbar=0&statusbar=0&messages=0&view=FitH`} 
+            className="pdf-viewer" 
+            title="Resume PDF Viewer"
+            style={{ border: 'none', width: '100%', height: '100%' }}
+          />
+        </div>
+      );
+    } else if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'webp'].includes(ext)) {
+      return (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-start', height: '100%', overflowY: 'auto', padding: '16px', background: 'rgba(0,0,0,0.2)' }}>
+          <img src={resumeSrc} alt="Original Resume" style={{ maxWidth: '100%', height: 'auto', borderRadius: 'var(--radius-sm)', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }} />
+        </div>
+      );
+    } else {
+      return (
+        <iframe 
+          src={`${backendUrl}/api/candidates/${candidate.id}/resume-html?token=${token}`} 
+          className="pdf-viewer" 
+          title="Resume Viewer"
+        />
+      );
     }
   };
 
@@ -275,22 +503,41 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
           </div>
 
           {/* Quick Actions Panel */}
-          <div className="glass" style={{ padding: '16px', borderRadius: 'var(--radius-md)', display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Current Stage:</span>
-              <select 
-                className="form-input" 
-                style={{ width: '150px', padding: '6px 12px', fontSize: '12px' }}
-                value={candidate.stage}
-                onChange={handleStageSelect}
-                disabled={currentRole === 'Hiring Manager'}
-              >
-                <option value="Inbox">Inbox</option>
-                <option value="Shortlist">Shortlist</option>
-                <option value="Interview">Interview</option>
-                <option value="Offered">Offered</option>
-                <option value="Rejected">Rejected</option>
-              </select>
+          <div className="glass" style={{ padding: '16px', borderRadius: 'var(--radius-md)', display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Current Stage:</span>
+                <select 
+                  className="form-input" 
+                  style={{ width: '120px', padding: '6px 12px', fontSize: '12px' }}
+                  value={candidate.stage}
+                  onChange={handleStageSelect}
+                  disabled={currentRole === 'Hiring Manager'}
+                >
+                  <option value="Inbox">Inbox</option>
+                  <option value="Shortlist">Shortlist</option>
+                  <option value="Interview">Interview</option>
+                  <option value="Offered">Offered</option>
+                  <option value="Rejected">Rejected</option>
+                </select>
+              </div>
+
+              {currentRole !== 'Hiring Manager' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Assign Manager:</span>
+                  <select 
+                    className="form-input" 
+                    style={{ width: '180px', padding: '6px 12px', fontSize: '12px' }}
+                    value={assignedManager}
+                    onChange={handleAssignManager}
+                  >
+                    <option value="">Unassigned</option>
+                    {managers.map(m => (
+                      <option key={m._id} value={m.email}>{m.email}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'flex', gap: '8px' }}>
@@ -323,6 +570,34 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
               )}
             </div>
           </div>
+
+          {/* Key Skills */}
+          {candidate.skills && candidate.skills.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <h3 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-primary)' }}>
+                <CheckCircle2 size={16} style={{ color: 'var(--accent-primary)' }} /> Key Skills
+              </h3>
+              <div className="glass" style={{ padding: '16px', borderRadius: 'var(--radius-md)', display: 'flex', flexWrap: 'wrap', gap: '8px', background: 'rgba(99, 102, 241, 0.02)' }}>
+                {candidate.skills.flatMap(s => (s.includes(':') ? s.split(':')[1] : s).split(',').map(x => x.trim()).filter(x => x)).map((skill, idx) => (
+                  <span 
+                    key={idx} 
+                    className="tag-badge tag-tech"
+                    style={{ 
+                      fontSize: '12px', 
+                      padding: '5px 12px', 
+                      fontWeight: '600',
+                      background: 'rgba(99, 102, 241, 0.1)',
+                      color: 'var(--accent-primary)',
+                      border: '1px solid rgba(99, 102, 241, 0.15)',
+                      borderRadius: '4px'
+                    }}
+                  >
+                    {skill}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* AI Generated Tags */}
           {candidate.tags && candidate.tags.length > 0 && (
@@ -420,52 +695,150 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
           {/* HR & Technical Interview Questions */}
           {((candidate.hrQuestions && candidate.hrQuestions.length > 0) || 
             (candidate.technicalQuestions && candidate.technicalQuestions.length > 0)) ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <h3 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-secondary)' }}>
                 <Sparkles size={16} /> Tailored Interview Questions & Answers
               </h3>
+
+              {/* Sub-tab Toggle Buttons */}
+              <div style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--glass-border)', paddingBottom: '12px' }}>
+                <button
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    background: qaSubTab === 'hr' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                    color: qaSubTab === 'hr' ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                    border: qaSubTab === 'hr' ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid var(--glass-border)',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px'
+                  }}
+                  onClick={() => setQaSubTab('hr')}
+                >
+                  Behavioral & HR ({candidate.hrQuestions?.length || 0})
+                </button>
+                <button
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    background: qaSubTab === 'tech' ? 'rgba(139, 92, 246, 0.15)' : 'transparent',
+                    color: qaSubTab === 'tech' ? 'var(--accent-secondary)' : 'var(--text-secondary)',
+                    border: qaSubTab === 'tech' ? '1px solid rgba(139, 92, 246, 0.3)' : '1px solid var(--glass-border)',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px'
+                  }}
+                  onClick={() => setQaSubTab('tech')}
+                >
+                  Technical & Domain ({candidate.technicalQuestions?.length || 0})
+                </button>
+              </div>
               
-              {candidate.hrQuestions && candidate.hrQuestions.length > 0 && (
+              {qaSubTab === 'hr' && candidate.hrQuestions && candidate.hrQuestions.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <h4 style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    Behavioral & HR Prep
-                  </h4>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {candidate.hrQuestions.map((q, idx) => (
-                      <div key={idx} className="glass" style={{ padding: '16px', borderRadius: 'var(--radius-md)', background: 'rgba(99, 102, 241, 0.02)', border: '1px solid rgba(99, 102, 241, 0.1)' }}>
+                  {candidate.hrQuestions.map((q, idx) => {
+                    const styles = getQuestionStyles(q.importance);
+                    return (
+                      <div 
+                        key={idx} 
+                        className="glass" 
+                        style={{ 
+                          padding: '16px', 
+                          borderRadius: 'var(--radius-md)', 
+                          background: styles.cardBg, 
+                          border: styles.cardBorder,
+                          boxShadow: styles.shadow
+                        }}
+                      >
                         <p style={{ fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)', marginBottom: '8px', lineHeight: '1.4' }}>
                           Q: {q.question}
+                          <span style={{ 
+                            display: 'inline-flex', 
+                            alignItems: 'center', 
+                            background: styles.badgeBg, 
+                            color: styles.badgeColor, 
+                            fontSize: '9px', 
+                            fontWeight: '700',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            padding: '2px 6px', 
+                            borderRadius: '4px',
+                            marginLeft: '8px',
+                            border: styles.badgeBorder,
+                            verticalAlign: 'middle'
+                          }}>
+                            {styles.badgeText}
+                          </span>
                         </p>
                         {(q.sample_answer || q.answer) && (
-                          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0, paddingLeft: '12px', borderLeft: '2px solid var(--accent-primary)', lineHeight: '1.5' }}>
+                          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0, paddingLeft: '12px', borderLeft: `3px solid ${styles.indicatorColor}`, lineHeight: '1.5' }}>
                             <strong>Suggested Prep:</strong> {q.sample_answer || q.answer}
                           </p>
                         )}
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
               )}
 
-              {candidate.technicalQuestions && candidate.technicalQuestions.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' }}>
-                  <h4 style={{ fontSize: '13px', color: 'var(--text-secondary)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    Technical & Domain Prep
-                  </h4>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    {candidate.technicalQuestions.map((q, idx) => (
-                      <div key={idx} className="glass" style={{ padding: '16px', borderRadius: 'var(--radius-md)', background: 'rgba(139, 92, 246, 0.02)', border: '1px solid rgba(139, 92, 246, 0.1)' }}>
+              {qaSubTab === 'tech' && candidate.technicalQuestions && candidate.technicalQuestions.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {candidate.technicalQuestions.map((q, idx) => {
+                    const styles = getQuestionStyles(q.importance);
+                    return (
+                      <div 
+                        key={idx} 
+                        className="glass" 
+                        style={{ 
+                          padding: '16px', 
+                          borderRadius: 'var(--radius-md)', 
+                          background: styles.cardBg, 
+                          border: styles.cardBorder,
+                          boxShadow: styles.shadow
+                        }}
+                      >
                         <p style={{ fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)', marginBottom: '8px', lineHeight: '1.4' }}>
                           Q: {q.question}
+                          <span style={{ 
+                            display: 'inline-flex', 
+                            alignItems: 'center', 
+                            background: styles.badgeBg, 
+                            color: styles.badgeColor, 
+                            fontSize: '9px', 
+                            fontWeight: '700',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            padding: '2px 6px', 
+                            borderRadius: '4px',
+                            marginLeft: '8px',
+                            border: styles.badgeBorder,
+                            verticalAlign: 'middle'
+                          }}>
+                            {styles.badgeText}
+                          </span>
                         </p>
                         {(q.sample_answer || q.answer) && (
-                          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0, paddingLeft: '12px', borderLeft: '2px solid var(--accent-secondary)', lineHeight: '1.5' }}>
+                          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: 0, paddingLeft: '12px', borderLeft: `3px solid ${styles.indicatorColor}`, lineHeight: '1.5' }}>
                             <strong>Suggested Prep:</strong> {q.sample_answer || q.answer}
                           </p>
                         )}
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -523,6 +896,36 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
               )}
             </div>
           </div>
+
+          {/* Projects */}
+          {candidate.projects && candidate.projects.length > 0 && (
+            <div>
+              <h3 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                <Sparkles size={16} style={{ color: 'var(--accent-secondary)' }} /> Projects
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {candidate.projects.map((proj, idx) => (
+                  <div key={idx} className="glass" style={{ padding: '16px', borderRadius: 'var(--radius-md)', background: 'rgba(99, 102, 241, 0.01)', border: '1px solid var(--glass-border)' }}>
+                    <h4 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '8px' }}>
+                      {proj.name}
+                    </h4>
+                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5', margin: '0 0 10px 0' }}>
+                      {proj.description}
+                    </p>
+                    {proj.matchingSkills && proj.matchingSkills.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {proj.matchingSkills.map((skill, sIdx) => (
+                          <span key={sIdx} style={{ fontSize: '11px', background: 'rgba(99, 102, 241, 0.1)', color: 'var(--accent-primary)', padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(99, 102, 241, 0.15)' }}>
+                            {skill}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Education */}
           <div>
@@ -618,46 +1021,9 @@ export default function CandidateDetails({ candidate, job, onClose, onOpenEmailM
 
           {/* Tab Body */}
           <div style={{ flexGrow: 1, overflow: 'hidden', height: '100%' }}>
-            {rightTab === 'pdf' && (candidate.resumeUrl || (window.localResumeUrls && window.localResumeUrls[candidate.id])) ? (
-              (() => {
-                const getFileType = (url) => {
-                  if (!url) return null;
-                  const parts = url.split('?')[0].split('/');
-                  const filename = parts[parts.length - 1];
-                  const ext = filename.split('.').pop().toLowerCase();
-                  return ext;
-                };
+            {rightTab === 'pdf' && renderResumeContent()}
 
-                const resumeSrc = (window.localResumeUrls && window.localResumeUrls[candidate.id]) 
-                  ? window.localResumeUrls[candidate.id]
-                  : `${backendUrl}${candidate.resumeUrl}`;
-                const ext = getFileType(resumeSrc);
-
-                if (ext === 'pdf') {
-                  return (
-                    <iframe 
-                      src={`${resumeSrc}#toolbar=0`} 
-                      className="pdf-viewer" 
-                      title="Resume PDF Viewer"
-                    />
-                  );
-                } else if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'webp'].includes(ext)) {
-                  return (
-                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-start', height: '100%', overflowY: 'auto', padding: '16px', background: 'rgba(0,0,0,0.2)' }}>
-                      <img src={resumeSrc} alt="Original Resume" style={{ maxWidth: '100%', height: 'auto', borderRadius: 'var(--radius-sm)', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }} />
-                    </div>
-                  );
-                } else {
-                  return (
-                    <iframe 
-                      src={`${backendUrl}/api/candidates/${candidate.id}/resume-html`} 
-                      className="pdf-viewer" 
-                      title="Resume Viewer"
-                    />
-                  );
-                }
-              })()
-            ) : (
+            {rightTab === 'text' && (
               <div style={{ 
                 height: '100%', 
                 overflowY: 'auto', 

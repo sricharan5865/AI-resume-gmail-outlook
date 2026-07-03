@@ -3,7 +3,7 @@ import { RefreshCw, ClipboardList, CheckCircle2, AlertCircle, Loader, Eye, X, Fi
 import { exportToCSV } from '../utils/export';
 import { matchDateRangeHelper } from '../utils/dateFilters';
 
-export default function IngestionTracker({ backendUrl, isActive }) {
+export default function IngestionTracker({ backendUrl, isActive, token }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedLog, setSelectedLog] = useState(null);
@@ -29,7 +29,11 @@ export default function IngestionTracker({ backendUrl, isActive }) {
   const fetchLogs = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const res = await fetch(`${backendUrl}/api/ingestion-logs`);
+      const res = await fetch(`${backendUrl}/api/ingestion-logs`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await res.json();
       setLogs(data.logs || []);
     } catch (e) {

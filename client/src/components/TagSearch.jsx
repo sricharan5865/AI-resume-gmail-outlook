@@ -54,9 +54,10 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
 
   // Handle autocomplete as user types
   useEffect(() => {
-    if (searchQuery.length >= 2) {
+    if (searchQuery.startsWith('#')) {
+      const prefix = searchQuery.slice(1);
       const delayFn = setTimeout(() => {
-        fetchSuggestions(searchQuery);
+        fetchSuggestions(prefix);
       }, 300); // Debounce typing
       return () => clearTimeout(delayFn);
     } else {
@@ -74,7 +75,9 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
 
   const fetchTagCloud = async () => {
     try {
-      const res = await fetch(`${backendUrl}/api/search/tag-cloud`);
+      const res = await fetch(`${backendUrl}/api/search/tag-cloud`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       setTagCloud(data.cloud || []);
     } catch (e) {
@@ -84,7 +87,9 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
 
   const fetchSuggestions = async (prefix) => {
     try {
-      const res = await fetch(`${backendUrl}/api/search/suggestions?prefix=${encodeURIComponent(prefix)}`);
+      const res = await fetch(`${backendUrl}/api/search/suggestions?prefix=${encodeURIComponent(prefix)}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       setSuggestions(data.suggestions || []);
     } catch (e) {
@@ -106,7 +111,9 @@ export default function TagSearch({ candidates, jobs, backendUrl, onSelectCandid
 
     setIsSearching(true);
     try {
-      const res = await fetch(`${backendUrl}/api/search/tags?q=${encodeURIComponent(queryStr)}`);
+      const res = await fetch(`${backendUrl}/api/search/tags?q=${encodeURIComponent(queryStr)}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       
       // matches comes back as { id, score }

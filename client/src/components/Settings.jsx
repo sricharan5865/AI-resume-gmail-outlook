@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Shield, Briefcase, Mail, Plus, Trash2, Info, AlertTriangle, Tag } from 'lucide-react';
 
-export default function SettingsView({ jobs, templates, onJobCreated, onJobDeleted, onJobUpdated, onSettingsSaved, backendUrl, currentRole }) {
+export default function SettingsView({ token, jobs, templates, onJobCreated, onJobDeleted, onJobUpdated, onSettingsSaved, backendUrl, currentRole }) {
   const [activeSubTab, setActiveSubTab] = useState('jobs');
 
   // New Job Form State
@@ -29,8 +29,12 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [claudeApiKey, setClaudeApiKey] = useState('');
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
-  const [ollamaModel, setOllamaModel] = useState('llama3');
+  const [ollamaModel, setOllamaModel] = useState('gpt-oss:20b');
+  const [ollamaEmbeddingModel, setOllamaEmbeddingModel] = useState('gpt-oss:20b');
   const [savingSettings, setSavingSettings] = useState(false);
+  const [ollamaConfigured, setOllamaConfigured] = useState(false);
+  const [testingOllamaConnection, setTestingOllamaConnection] = useState(false);
+  const [ollamaTestResult, setOllamaTestResult] = useState(null);
 
   // API configuration present status
   const [geminiConfigured, setGeminiConfigured] = useState(false);
@@ -71,7 +75,9 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
 
   const fetchTagPreferences = async () => {
     try {
-      const res = await fetch(`${backendUrl}/api/settings/tag-preferences`);
+      const res = await fetch(`${backendUrl}/api/settings/tag-preferences`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       setTagPreferences(data || []);
     } catch (e) {
@@ -81,7 +87,9 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
 
   const fetchSourcingAndAISettings = async () => {
     try {
-      const res = await fetch(`${backendUrl}/api/settings`);
+      const res = await fetch(`${backendUrl}/api/settings`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (res.ok) {
         const data = await res.json();
         if (data) {
@@ -94,7 +102,8 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
           setOpenaiApiKey(data.openaiApiKey ? '••••••••' : '');
           setClaudeApiKey(data.claudeApiKey ? '••••••••' : '');
           setOllamaUrl(data.ollamaUrl || 'http://localhost:11434');
-          setOllamaModel(data.ollamaModel || 'llama3');
+          setOllamaModel(data.ollamaModel || 'gpt-oss:20b');
+          setOllamaEmbeddingModel(data.ollamaEmbeddingModel || data.ollamaModel || 'gpt-oss:20b');
           setOutlookClientId(data.outlookClientId ? '••••••••' : '');
           setOutlookClientSecret(data.outlookClientSecret ? '••••••••' : '');
           setOutlookTenantId(data.outlookTenantId || '');
@@ -108,11 +117,14 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
 
   const checkAuthStatus = async () => {
     try {
-      const res = await fetch(`${backendUrl}/api/auth/status`);
+      const res = await fetch(`${backendUrl}/api/auth/status`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
       setGeminiConfigured(!!data.geminiApiKeyConfigured);
       setOpenaiConfigured(!!data.openaiApiKeyConfigured);
       setClaudeConfigured(!!data.claudeApiKeyConfigured);
+      setOllamaConfigured(!!data.ollamaConfigured);
       setOutlookConfigured(!!data.outlookConfigured);
       setImapConfigured(!!data.imapConfigured);
       setOutlookConnected(!!data.outlookConnected);
@@ -138,7 +150,8 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
       const res = await fetch(`${backendUrl}/api/jobs`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           title: jobTitle,
@@ -170,7 +183,12 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
     if (!window.confirm('Are you sure you want to delete this job posting? Candidates will remain in database but won\'t have job associations.')) return;
     if (!window.confirm('Are you absolutely sure you want to delete this job posting? This cannot be undone.')) return;
     try {
-      await fetch(`${backendUrl}/api/jobs/${id}`, { method: 'DELETE' });
+      await fetch(`${backendUrl}/api/jobs/${id}`, { 
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       onJobDeleted(id);
     } catch (e) {
       console.error(e);
@@ -187,7 +205,8 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
       const res = await fetch(`${backendUrl}/api/jobs/generate`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           title: jobTitle,
@@ -218,7 +237,8 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
       const res = await fetch(`${backendUrl}/api/jobs/${job.id}/postings`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ postings: updatedPostings })
       });
@@ -244,7 +264,8 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
       const res = await fetch(`${backendUrl}/api/settings`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ emailTemplates: newTpls })
       });
@@ -264,7 +285,10 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
     try {
       const res = await fetch(`${backendUrl}/api/settings/tag-preferences`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ tagPreferences })
       });
       if (!res.ok) throw new Error('Failed to update tag preferences');
@@ -300,6 +324,7 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
       updateData.aiProvider = aiProvider;
       updateData.ollamaUrl = ollamaUrl;
       updateData.ollamaModel = ollamaModel;
+      updateData.ollamaEmbeddingModel = ollamaEmbeddingModel;
       if (outlookClientId !== '••••••••') {
         updateData.outlookClientId = outlookClientId;
       }
@@ -312,7 +337,8 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
       const res = await fetch(`${backendUrl}/api/settings`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(updateData)
       });
@@ -333,7 +359,12 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
     setTestingConnection(true);
     setOutlookTestResult(null);
     try {
-      const res = await fetch(`${backendUrl}/api/outlook/test-connection`, { method: 'POST' });
+      const res = await fetch(`${backendUrl}/api/outlook/test-connection`, { 
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await res.json();
       setOutlookTestResult(data);
       if (data.success) {
@@ -350,7 +381,12 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
     setTestingGmailConnection(true);
     setGmailTestResult(null);
     try {
-      const res = await fetch(`${backendUrl}/api/gmail/test-connection`, { method: 'POST' });
+      const res = await fetch(`${backendUrl}/api/gmail/test-connection`, { 
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await res.json();
       setGmailTestResult(data);
       if (data.success) {
@@ -360,6 +396,30 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
       setGmailTestResult({ success: false, error: e.message });
     } finally {
       setTestingGmailConnection(false);
+    }
+  };
+
+  const handleTestOllamaConnection = async () => {
+    setTestingOllamaConnection(true);
+    setOllamaTestResult(null);
+    try {
+      const res = await fetch(`${backendUrl}/api/ollama/test-connection`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ ollamaUrl })
+      });
+      const data = await res.json();
+      setOllamaTestResult(data);
+      if (data.success) {
+        checkAuthStatus();
+      }
+    } catch (e) {
+      setOllamaTestResult({ success: false, error: e.message });
+    } finally {
+      setTestingOllamaConnection(false);
     }
   };
 
@@ -1037,19 +1097,153 @@ export default function SettingsView({ jobs, templates, onJobCreated, onJobDelet
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                     <div className="form-group" style={{ marginBottom: 0 }}>
-                      <label className="form-label">Ollama API URL</label>
-                      <input type="text" className="form-input" placeholder="http://localhost:11434" value={ollamaUrl} onChange={(e) => setOllamaUrl(e.target.value)} />
+                      <label className="form-label">Ollama Server URL</label>
+                      <input 
+                        type="text" 
+                        className="form-input" 
+                        placeholder="http://localhost:11434" 
+                        value={ollamaUrl} 
+                        onChange={(e) => setOllamaUrl(e.target.value)} 
+                      />
                     </div>
-                    <div className="form-group" style={{ marginBottom: 0 }}>
-                      <label className="form-label">Model Name</label>
-                      <input type="text" className="form-input" placeholder="llama3" value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)} />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Model Name</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          placeholder="llama3" 
+                          value={ollamaModel} 
+                          onChange={(e) => setOllamaModel(e.target.value)} 
+                        />
+                      </div>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label">Embedding Model Name</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          placeholder="nomic-embed-text" 
+                          value={ollamaEmbeddingModel} 
+                          onChange={(e) => setOllamaEmbeddingModel(e.target.value)} 
+                        />
+                      </div>
                     </div>
                   </div>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block' }}>
-                    Connects to your locally running Ollama instance. Make sure Ollama is running and has access to the requested model. For instructions on running local models, visit <a href="https://ollama.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'underline' }}>Ollama.com</a>.
+
+                  {/* Test Connection Button */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <button
+                      type="button"
+                      onClick={handleTestOllamaConnection}
+                      disabled={testingOllamaConnection}
+                      style={{
+                        padding: '8px 20px', borderRadius: '8px', border: '1px solid rgba(99, 102, 241, 0.4)',
+                        background: 'rgba(99, 102, 241, 0.1)', color: '#6366f1', cursor: testingOllamaConnection ? 'wait' : 'pointer',
+                        fontWeight: '600', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px',
+                        transition: 'all 0.2s', opacity: testingOllamaConnection ? 0.7 : 1
+                      }}
+                    >
+                      {testingOllamaConnection ? '⏳ Testing...' : '🔌 Test Connection'}
+                    </button>
+
+                    {ollamaTestResult && (
+                      <div style={{
+                        padding: '8px 14px', borderRadius: '8px', fontSize: '12px', fontWeight: '500',
+                        background: ollamaTestResult.success ? 'rgba(34, 197, 94, 0.1)' : 'rgba(244, 63, 94, 0.1)',
+                        color: ollamaTestResult.success ? '#22c55e' : '#f43f5e',
+                        border: `1px solid ${ollamaTestResult.success ? 'rgba(34, 197, 94, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`,
+                        display: 'flex', alignItems: 'center', gap: '6px'
+                      }}>
+                        {ollamaTestResult.success ? '✓ Connected' : `✕ ${ollamaTestResult.error}`}
+                      </div>
+                    )}
+                  </div>
+
+                  {ollamaTestResult?.success && ollamaTestResult?.models && (
+                    <div style={{
+                      padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', border: '1px solid var(--glass-border)', fontSize: '12px'
+                    }}>
+                      <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '10px' }}>Available Models — click to select:</strong>
+
+                      {/* Analysis / Parsing Model */}
+                      <div style={{ marginBottom: '10px' }}>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '11px', display: 'block', marginBottom: '5px' }}>
+                          📄 Analysis Model (resume parsing &amp; scoring)
+                        </span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {ollamaTestResult.models.map(m => (
+                            <span
+                              key={m.name}
+                              onClick={() => setOllamaModel(m.name)}
+                              title="Click to use for analysis"
+                              style={{
+                                background: ollamaModel === m.name ? 'rgba(99,102,241,0.15)' : 'var(--bg-tertiary)',
+                                padding: '3px 10px', borderRadius: '4px', cursor: 'pointer',
+                                border: `1px solid ${ollamaModel === m.name ? 'var(--accent-primary)' : 'var(--glass-border)'}`,
+                                color: ollamaModel === m.name ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                                fontWeight: ollamaModel === m.name ? '600' : 'normal',
+                                transition: 'all 0.15s'
+                              }}
+                            >
+                              {ollamaModel === m.name ? '✓ ' : ''}{m.name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Embedding Model */}
+                      <div>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '11px', display: 'block', marginBottom: '5px' }}>
+                          🔍 Embedding Model (AI Search / RAG indexing)
+                        </span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {ollamaTestResult.models.map(m => (
+                            <span
+                              key={m.name}
+                              onClick={() => setOllamaEmbeddingModel(m.name)}
+                              title="Click to use for embeddings"
+                              style={{
+                                background: ollamaEmbeddingModel === m.name ? 'rgba(34,197,94,0.12)' : 'var(--bg-tertiary)',
+                                padding: '3px 10px', borderRadius: '4px', cursor: 'pointer',
+                                border: `1px solid ${ollamaEmbeddingModel === m.name ? '#22c55e' : 'var(--glass-border)'}`,
+                                color: ollamaEmbeddingModel === m.name ? '#22c55e' : 'var(--text-secondary)',
+                                fontWeight: ollamaEmbeddingModel === m.name ? '600' : 'normal',
+                                transition: 'all 0.15s'
+                              }}
+                            >
+                              {ollamaEmbeddingModel === m.name ? '✓ ' : ''}{m.name}
+                            </span>
+                          ))}
+                          {/* Shortcut: same as main model */}
+                          {ollamaEmbeddingModel !== ollamaModel && (
+                            <span
+                              onClick={() => setOllamaEmbeddingModel(ollamaModel)}
+                              title="Use same model as analysis"
+                              style={{
+                                background: 'rgba(245,158,11,0.1)', padding: '3px 10px', borderRadius: '4px',
+                                cursor: 'pointer', border: '1px dashed rgba(245,158,11,0.5)',
+                                color: '#f59e0b', fontSize: '11px', transition: 'all 0.15s'
+                              }}
+                            >
+                              ↑ Same as analysis ({ollamaModel})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
+                    You can use <strong>any model</strong> for analysis and a <strong>different model</strong> for embedding — or the same for both. Changes take effect after saving.<br/>
+                    Analysis: <code style={{ background: 'var(--bg-tertiary)', padding: '1px 5px', borderRadius: '3px' }}>{ollamaModel}</code>
+                    &nbsp;·&nbsp;
+                    Embedding: <code style={{ background: 'var(--bg-tertiary)', padding: '1px 5px', borderRadius: '3px' }}>{ollamaEmbeddingModel}</code>
+                    &nbsp;·&nbsp;
+                    After changing models, click <strong>Reindex</strong> on the AI Search page.
                   </span>
                 </div>
               )}
+
             </div>
 
             <button type="submit" className="btn btn-primary" style={{ alignSelf: 'flex-start', padding: '12px 24px' }} disabled={savingSettings || currentRole !== 'Admin'}>

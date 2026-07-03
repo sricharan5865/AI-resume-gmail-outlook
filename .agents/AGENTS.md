@@ -12,3 +12,11 @@
 
 ## 3. Preserving Code & Web Pages
 - **Do Not Delete or Overwrite Web Pages**: Never delete, prune, or completely overwrite previously created web pages, layout components, views, or routing files unless the user explicitly requests you to delete or remove them. Always preserve existing UI pages and functionality.
+
+## 4. Ollama Integration & Optimization Guide
+- **Dynamic Prompt Compression**: When sending requests to local Ollama endpoints, dynamically condense system instructions and schema descriptions. Avoid sending verbose cloud-optimized prompts (>800 tokens) to prevent high prompt pre-processing latency.
+- **Explicit Parameter Tuning**: Always configure `num_ctx` (context size) and `num_predict` (completion limit) explicitly based on the task:
+  - Complex generation (e.g., resume parsing): `num_ctx: 8192`, `num_predict: 2048`
+  - Simple classification/indexing: `num_ctx: 2048`, `num_predict: 256`
+- **Short Timeout Wrappers**: Ensure connection tests and status checks to local services use short, client-safe timeouts (e.g., 10 seconds) to avoid thread blocking or frontend freezes.
+- **JSON Format Resilience**: Always include format validation and a JSON repair utility (like bracket-matching and quotes escaping) when parsing local model outputs, as they are more prone to minor syntax formatting errors than cloud models.

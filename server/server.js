@@ -1,3 +1,12 @@
+import { Agent, setGlobalDispatcher } from 'undici';
+
+// Configure global dispatcher to increase fetch timeouts (undici defaults to 30s)
+setGlobalDispatcher(new Agent({
+  headersTimeout: 1800000, // 30 minutes
+  bodyTimeout: 1800000,
+  connectTimeout: 60000 // 60 seconds
+}));
+
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -10,15 +19,13 @@ import mongoose from 'mongoose';
 import { ImapFlow } from 'imapflow';
 
 // Google OAuth imports deleted
-import { 
-  fetchIMAPEmails, 
-  markIMAPEmailAsRead, 
-  getIMAPAttachmentData 
-} from './imapSourcing.js';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { fetchIMAPEmails, markIMAPEmailAsRead, getIMAPAttachmentData } from './imapSourcing.js';
 import { parseResume, scoreCandidate, scoreCandidateByOwnCategory, generateTags, generateJobDescription, generateQuestionsForCandidate } from './geminiParser.js';
 import { extractTextFromPDF, extractTextFromFile, convertDocxToHtml } from './parser.js';
 import { searchIndex } from './searchIndex.js';
-import { Candidate, Job, Settings, ProcessedEmail, IngestionLog } from './models.js';
+import { Candidate, Job, Settings, ProcessedEmail, IngestionLog, User } from './models.js';
 import {
   getOutlookAccessToken,
   listOutlookMessages,
@@ -151,25 +158,120 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-app.use(cors({ origin: FRONTEND_URL, credentials: true }));
+// CORS: Always allow localhost for Windows dev + configured FRONTEND_URL for Linux/remote access
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  FRONTEND_URL,
+  ...(process.env.EXTRA_ORIGINS ? process.env.EXTRA_ORIGINS.split(',').map(o => o.trim()) : [])
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (Postman, curl, server-to-server)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Allow any localhost/127.0.0.1 origin on any port (dev convenience)
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return callback(null, true);
+    callback(new Error(`CORS: origin ${origin} not allowed`));
+  },
+  credentials: true
+}));
 app.use(express.json());
 app.use('/uploads', express.static(UPLOADS_DIR));
+app.use('/api/uploads', express.static(UPLOADS_DIR));
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
+    // Sanitize filename: replace spaces and special chars with underscores
+    // This is required for Linux where filenames are case-sensitive and
+    // spaces in filenames cause static file serving issues (%20 encoding)
+    const sanitized = file.originalname.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_.\-]/g, '_');
+    cb(null, uniqueSuffix + '-' + sanitized);
   }
 });
 const upload = multer({ 
   storage
 });
 
+const JWT_SECRET = process.env.JWT_SECRET || 'talentflow-super-secret-key';
+
+function authenticateToken(req, res, next) {
+  if (process.env.NODE_ENV === 'test') {
+    req.user = { userId: 'mock-user-id', email: 'admin@ispatialtec.com', role: 'admin' };
+    return next();
+  }
+
+  const authHeader = req.headers['authorization'];
+  let token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token && req.query.token) {
+    token = req.query.token;
+  }
+
+  if (!token) return res.status(401).json({ error: 'Access denied: No token provided' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Access denied: Invalid token' });
+    req.user = user;
+    next();
+  });
+}
+
+function requireRole(roles) {
+  return (req, res, next) => {
+    if (process.env.NODE_ENV === 'test') {
+      return next();
+    }
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied: Insufficient privileges' });
+    }
+    next();
+  };
+}
+
 // Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI || 'mongodb://admin:password@localhost:27017/talentflow?authSource=admin')
   .then(async () => {
     console.log('Connected to MongoDB');
+
+    // Seed default users if empty
+    try {
+      const userCount = await User.countDocuments();
+      if (userCount === 0) {
+        console.log('Seeding default users...');
+        const adminPass = await bcrypt.hash('admin123', 10);
+        const recruiterPass = await bcrypt.hash('recruiter123', 10);
+        const managerPass = await bcrypt.hash('manager123', 10);
+
+        await User.create([
+          { email: 'admin@ispatialtec.com', password: adminPass, role: 'admin' },
+          { email: 'recruiter@ispatialtec.com', password: recruiterPass, role: 'recruiter' },
+          { email: 'manager@ispatialtec.com', password: managerPass, role: 'manager' }
+        ]);
+        console.log('Default users seeded successfully.');
+      }
+    } catch (err) {
+      console.error('Error seeding default users:', err.message);
+    }
+
+    // Migrate existing candidate resumeUrls from /uploads/ to /api/uploads/
+    try {
+      const candidatesToUpdate = await Candidate.find({ resumeUrl: { $regex: /^\/uploads\// } });
+      for (const c of candidatesToUpdate) {
+        c.resumeUrl = c.resumeUrl.replace(/^\/uploads\//, '/api/uploads/');
+        await c.save();
+      }
+      if (candidatesToUpdate.length > 0) {
+        console.log(`Migrated ${candidatesToUpdate.length} candidate resumeUrls to /api/uploads/`);
+      }
+    } catch (err) {
+      console.error('Error migrating candidate resumeUrls:', err.message);
+    }
+
     // Build search index
     const candidates = await Candidate.find();
     if (candidates.length > 0) {
@@ -221,6 +323,150 @@ async function sendSMTPMessage({ to, subject, body }) {
 
 // Google OAuth routes deleted
 
+// User Login
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    const token = jwt.sign({ userId: user._id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+    res.json({ token, user: { email: user.email, role: user.role } });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Self change password
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  const { currentPassword, newPassword, confirmNewPassword } = req.body;
+  if (!currentPassword || !newPassword || !confirmNewPassword) {
+    return res.status(400).json({ error: 'All password fields are required' });
+  }
+  if (newPassword !== confirmNewPassword) {
+    return res.status(400).json({ error: 'New password and confirm password do not match' });
+  }
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ error: 'Incorrect current password' });
+    }
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin User Management routes
+app.get('/api/admin/users', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const users = await User.find({}, '-password');
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/users', authenticateToken, requireRole(['admin']), async (req, res) => {
+  const { email, password, confirmPassword, role } = req.body;
+  if (!email || !password || !confirmPassword || !role) {
+    return res.status(400).json({ error: 'All fields are required' });
+  }
+  if (password !== confirmPassword) {
+    return res.status(400).json({ error: 'Passwords do not match' });
+  }
+  if (!['admin', 'recruiter', 'manager'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role specified' });
+  }
+  try {
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await User.create({ email, password: hashedPassword, role });
+    res.status(201).json({ email: newUser.email, role: newUser.role, createdAt: newUser.createdAt });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/admin/users/:id', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const userToDelete = await User.findById(req.params.id);
+    if (!userToDelete) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    if (userToDelete.email === 'admin@ispatialtec.com') {
+      return res.status(400).json({ error: 'Cannot delete the primary admin account' });
+    }
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'User deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/users/:id/reset-password', authenticateToken, requireRole(['admin']), async (req, res) => {
+  const { newPassword, confirmNewPassword } = req.body;
+  if (!newPassword || !confirmNewPassword) {
+    return res.status(400).json({ error: 'All password fields are required' });
+  }
+  if (newPassword !== confirmNewPassword) {
+    return res.status(400).json({ error: 'Passwords do not match' });
+  }
+  try {
+    const userToUpdate = await User.findById(req.params.id);
+    if (!userToUpdate) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    userToUpdate.password = await bcrypt.hash(newPassword, 10);
+    await userToUpdate.save();
+    res.json({ success: true, message: 'Password reset successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Candidate sharing endpoint
+app.post('/api/candidates/:id/assign', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
+  const { managerEmail } = req.body;
+  try {
+    const candidate = await Candidate.findOne({ id: req.params.id });
+    if (!candidate) {
+      return res.status(404).json({ error: 'Candidate not found' });
+    }
+    candidate.assignedTo = managerEmail || null;
+    await candidate.save();
+    res.json({ success: true, candidate });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/auth/managers', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
+  try {
+    const managers = await User.find({ role: 'manager' }, 'email');
+    res.json(managers);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/auth/status', async (req, res) => {
   const emailConfig = await getEmailConfig();
   const settings = await Settings.findById('global');
@@ -248,8 +494,52 @@ app.get('/api/auth/status', async (req, res) => {
     aiProvider: settings?.aiProvider || 'gemini',
     geminiApiKeyConfigured: !!(settings?.geminiApiKey || process.env.GEMINI_API_KEY),
     openaiApiKeyConfigured: !!(settings?.openaiApiKey || process.env.OPENAI_API_KEY),
-    claudeApiKeyConfigured: !!(settings?.claudeApiKey || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY)
+    claudeApiKeyConfigured: !!(settings?.claudeApiKey || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY),
+    ollamaConfigured: !!(settings?.ollamaUrl || 'http://localhost:11434')
   });
+});
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => controller.abort());
+  }
+  
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  
+  try {
+    const response = await fetch(url, { ...options, signal });
+    return response;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs / 1000} seconds`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+app.post('/api/ollama/test-connection', authenticateToken, requireRole(['admin']), async (req, res) => {
+  const { ollamaUrl } = req.body;
+  if (!ollamaUrl) {
+    return res.status(400).json({ success: false, error: 'Ollama URL is required.' });
+  }
+
+  try {
+    const response = await fetchWithTimeout(`${ollamaUrl.replace(/\/+$/, '')}/api/tags`, {}, 10000);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Ollama tags: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json();
+    res.json({ success: true, models: data.models || [] });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -294,10 +584,16 @@ async function processEmailAttachment(messageId, filename, buffer, emailConfig, 
     fs.writeFileSync(localFilePath, buffer);
 
     console.log(`Extracting text from ${filename}...`);
-    const pdfText = await extractTextFromFile(localFilePath, filename, null);
+    let pdfText = '';
+    try {
+      pdfText = await extractTextFromFile(localFilePath, filename, null);
+    } catch (err) {
+      console.warn('Failed to extract text locally:', err.message);
+    }
 
-    console.log('Parsing resume with Gemini...');
-    const parsedData = await parseResume(pdfText);
+    const pdfBase64 = buffer.toString('base64');
+    console.log('Parsing resume with LLM...');
+    const parsedData = await parseResume(pdfText, pdfBase64);
 
     // Duplicate Check
     let duplicate = null;
@@ -376,7 +672,7 @@ async function processEmailAttachment(messageId, filename, buffer, emailConfig, 
       education: parsedData.education || [],
       tags: generatedTags,
       stage: 'Inbox',
-      resumeUrl: `/uploads/${localFilename}`,
+      resumeUrl: `/api/uploads/${localFilename}`,
       resumeText: pdfText,
       matchScore: scoringResult.score || 0,
       matchingSkills: scoringResult.matchingSkills || [],
@@ -391,6 +687,7 @@ async function processEmailAttachment(messageId, filename, buffer, emailConfig, 
       interviewQuestions: parsedData.interviewQuestions || [],
       hrQuestions: parsedData.hrQuestions || [],
       technicalQuestions: parsedData.technicalQuestions || [],
+      projects: parsedData.projects || [],
       history: [{ date: new Date().toISOString(), type: 'Imported', text: `Imported from email attachment: ${filename}` }]
     });
 
@@ -580,7 +877,7 @@ runEmailPoller();
    API ROUTES
    ========================================================================== */
 
-app.get('/api/gmail/emails', async (req, res) => {
+app.get('/api/gmail/emails', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   const emailConfig = await getEmailConfig();
 
   if (emailConfig.provider === 'outlook') {
@@ -633,7 +930,7 @@ app.get('/api/gmail/emails', async (req, res) => {
 });
 
 // Fetch raw attachment to preview PDF before parsing
-app.get('/api/gmail/attachment/:messageId/:attachmentId', async (req, res) => {
+app.get('/api/gmail/attachment/:messageId/:attachmentId', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   const { messageId, attachmentId } = req.params;
   const emailConfig = await getEmailConfig();
 
@@ -664,7 +961,7 @@ app.get('/api/gmail/attachment/:messageId/:attachmentId', async (req, res) => {
 });
 
 // Manual extraction trigger
-app.post('/api/candidates/extract-gmail', async (req, res) => {
+app.post('/api/candidates/extract-gmail', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   const { messageId, attachmentId, jobId } = req.body;
   if (!messageId || !attachmentId) return res.status(400).json({ error: 'Missing parameters.' });
   
@@ -714,8 +1011,14 @@ app.post('/api/candidates/extract-gmail', async (req, res) => {
     const localFilename = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
     localFilePath = path.join(UPLOADS_DIR, localFilename);
     fs.writeFileSync(localFilePath, buffer);
-    const pdfText = await extractTextFromFile(localFilePath, filename, null);
-    const parsedData = await parseResume(pdfText);
+    let pdfText = '';
+    try {
+      pdfText = await extractTextFromFile(localFilePath, filename, null);
+    } catch (err) {
+      console.warn('Failed to extract text locally:', err.message);
+    }
+    const pdfBase64 = buffer.toString('base64');
+    const parsedData = await parseResume(pdfText, pdfBase64);
 
     // Duplicate Check
     let duplicate = null;
@@ -771,7 +1074,7 @@ app.post('/api/candidates/extract-gmail', async (req, res) => {
       linkedinUrl: parsedData.linkedinUrl || '',
       skills: parsedData.skills || [], experience: parsedData.experience || [],
       education: parsedData.education || [], tags: generatedTags, stage: 'Inbox',
-      resumeUrl: `/uploads/${localFilename}`, resumeText: pdfText, 
+      resumeUrl: `/api/uploads/${localFilename}`, resumeText: pdfText, 
       matchScore: scoringResult.score || 0,
       matchingSkills: scoringResult.matchingSkills || [], missingSkills: scoringResult.missingSkills || [],
       matchExplanation: scoringResult.reasoning || '', 
@@ -784,6 +1087,7 @@ app.post('/api/candidates/extract-gmail', async (req, res) => {
       interviewQuestions: parsedData.interviewQuestions || [],
       hrQuestions: parsedData.hrQuestions || [],
       technicalQuestions: parsedData.technicalQuestions || [],
+      projects: parsedData.projects || [],
       history: [{ date: new Date().toISOString(), type: 'Imported', text: `Imported via manual trigger: ${filename}` }]
     });
 
@@ -836,7 +1140,7 @@ app.post('/api/candidates/extract-gmail', async (req, res) => {
   }
 });
 
-app.get('/api/candidates/:id/resume-html', async (req, res) => {
+app.get('/api/candidates/:id/resume-html', authenticateToken, async (req, res) => {
   try {
     const candidate = await Candidate.findOne({ id: req.params.id });
     if (!candidate || !candidate.resumeUrl) {
@@ -929,7 +1233,7 @@ app.get('/api/candidates/:id/resume-html', async (req, res) => {
   }
 });
 
-app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => {
+app.post('/api/candidates/upload', authenticateToken, requireRole(['admin', 'recruiter']), upload.single('resume'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No resume file uploaded.' });
   const { jobId, logId } = req.body;
 
@@ -955,8 +1259,19 @@ app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => 
   }
 
   try {
-    const pdfText = await extractTextFromFile(req.file.path, req.file.originalname, req.file.mimetype);
-    const parsedData = await parseResume(pdfText);
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    if (ext !== '.pdf' && ext !== '.docx') {
+      throw new Error(`Unsupported or unreadable file format: ${req.file.originalname}`);
+    }
+    let pdfText = '';
+    try {
+      pdfText = await extractTextFromFile(req.file.path, req.file.originalname, req.file.mimetype);
+    } catch (err) {
+      console.warn('Failed to extract text locally:', err.message);
+    }
+    const fileBuffer = fs.readFileSync(req.file.path);
+    const pdfBase64 = fileBuffer.toString('base64');
+    const parsedData = await parseResume(pdfText, pdfBase64);
     
     // Duplicate Check
     let duplicate = null;
@@ -991,21 +1306,28 @@ app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => 
 
     let settings = await Settings.findById('global');
 
-    console.log(`Scoring according to candidate's own category...`);
-    const ownCategoryResult = await scoreCandidateByOwnCategory(parsedData);
+    let ownCategoryResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
+    let scoringResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
+    let generatedTags = [];
 
     let job = null;
-    let scoringResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
-
     if (jobId) {
       job = await Job.findOne({ id: jobId });
     }
-    if (job) {
-      console.log(`Scoring against job: ${job.title}...`);
-      scoringResult = await scoreCandidate(parsedData, job);
-    }
 
-    let generatedTags = await generateTags(parsedData, job || { title: 'General', description: '' }, settings?.tagPreferences || []);
+    try {
+      console.log('Running analysis, scoring, and tag generation in parallel...');
+      const results = await Promise.all([
+        scoreCandidateByOwnCategory(parsedData).catch(e => { console.error('Own category score failed:', e.message); return null; }),
+        job ? scoreCandidate(parsedData, job).catch(e => { console.error('Job match score failed:', e.message); return null; }) : Promise.resolve(null),
+        generateTags(parsedData, job || { title: 'General', description: '' }, settings?.tagPreferences || []).catch(e => { console.error('Tag generation failed:', e.message); return null; })
+      ]);
+      if (results[0]) ownCategoryResult = results[0];
+      if (results[1]) scoringResult = results[1];
+      if (results[2]) generatedTags = results[2];
+    } catch (err) {
+      console.error('Parallel scoring/tagging failed:', err.message);
+    }
 
     const newCandidate = new Candidate({
       id: `candidate-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, jobId, name: parsedData.name || 'Unknown',
@@ -1013,7 +1335,7 @@ app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => 
       linkedinUrl: parsedData.linkedinUrl || '',
       skills: parsedData.skills || [], experience: parsedData.experience || [],
       education: parsedData.education || [], tags: generatedTags, stage: 'Inbox',
-      resumeUrl: `/uploads/${req.file.filename}`, resumeText: pdfText, 
+      resumeUrl: `/api/uploads/${req.file.filename}`, resumeText: pdfText, 
       matchScore: scoringResult.score || 0,
       matchingSkills: scoringResult.matchingSkills || [], missingSkills: scoringResult.missingSkills || [],
       matchExplanation: scoringResult.reasoning || '', 
@@ -1026,6 +1348,7 @@ app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => 
       interviewQuestions: parsedData.interviewQuestions || [],
       hrQuestions: parsedData.hrQuestions || [],
       technicalQuestions: parsedData.technicalQuestions || [],
+      projects: parsedData.projects || [],
       history: [{ date: new Date().toISOString(), type: 'Imported', text: `Manual upload: ${req.file.originalname}` }]
     });
 
@@ -1062,8 +1385,9 @@ app.post('/api/candidates/upload', upload.single('resume'), async (req, res) => 
   }
 });
 
-app.post('/api/candidates/upload/resolve', async (req, res) => {
+app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   const { action, candidateId, tempFile, parsedData, pdfText, jobId, logId } = req.body;
+  const data = (parsedData && typeof parsedData === 'object') ? parsedData : {};
 
   try {
     if (action === 'update') {
@@ -1078,7 +1402,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
 
       // Delete old file if exists
       if (candidate.resumeUrl) {
-        const oldFilename = candidate.resumeUrl.replace('/uploads/', '');
+        const oldFilename = candidate.resumeUrl.replace('/api/uploads/', '').replace('/uploads/', '');
         const oldFilepath = path.join(UPLOADS_DIR, oldFilename);
         if (fs.existsSync(oldFilepath) && oldFilename !== tempFile) {
           try { fs.unlinkSync(oldFilepath); } catch (e) {}
@@ -1086,16 +1410,16 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
       }
 
       // Update fields
-      candidate.name = parsedData.name || candidate.name;
-      candidate.email = parsedData.email || candidate.email;
-      candidate.phone = parsedData.phone || candidate.phone;
-      candidate.linkedinUrl = parsedData.linkedinUrl || candidate.linkedinUrl;
-      candidate.skills = parsedData.skills || candidate.skills;
-      candidate.experience = parsedData.experience || candidate.experience;
-      candidate.education = parsedData.education || candidate.education;
+      candidate.name = data.name || candidate.name;
+      candidate.email = data.email || candidate.email;
+      candidate.phone = data.phone || candidate.phone;
+      candidate.linkedinUrl = data.linkedinUrl || candidate.linkedinUrl;
+      candidate.skills = data.skills || candidate.skills;
+      candidate.experience = data.experience || candidate.experience;
+      candidate.education = data.education || candidate.education;
       candidate.resumeText = pdfText || candidate.resumeText;
       if (tempFile) {
-        candidate.resumeUrl = `/uploads/${tempFile}`;
+        candidate.resumeUrl = `/api/uploads/${tempFile}`;
       }
       if (jobId) {
         candidate.jobId = jobId;
@@ -1104,7 +1428,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
       let settings = await Settings.findById('global');
 
       // Re-score candidate
-      const ownCategoryResult = await scoreCandidateByOwnCategory(parsedData);
+      const ownCategoryResult = await scoreCandidateByOwnCategory(data);
       candidate.ownCategoryScore = ownCategoryResult.score || 0;
       candidate.ownCategoryMatchingSkills = ownCategoryResult.matchingSkills || [];
       candidate.ownCategoryMissingSkills = ownCategoryResult.missingSkills || [];
@@ -1116,7 +1440,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
         job = await Job.findOne({ id: candidate.jobId });
       }
       if (job) {
-        scoringResult = await scoreCandidate(parsedData, job);
+        scoringResult = await scoreCandidate(data, job);
       }
       candidate.matchScore = scoringResult.score || 0;
       candidate.matchingSkills = scoringResult.matchingSkills || [];
@@ -1125,7 +1449,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
 
       // Re-generate tags
       try {
-        const generatedTags = await generateTags(parsedData, job || { title: 'General', description: '' }, settings?.tagPreferences || []);
+        const generatedTags = await generateTags(data, job || { title: 'General', description: '' }, settings?.tagPreferences || []);
         candidate.tags = generatedTags;
       } catch (e) {
         console.warn('Tag generation failed during update:', e.message);
@@ -1146,7 +1470,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
             status: 'success', 
             candidateId: candidate.id,
             candidateName: candidate.name,
-            extractedData: parsedData,
+            extractedData: data,
             error: ''
           }
         ).catch(e => console.error('Failed to update ingestion log:', e));
@@ -1165,7 +1489,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
       const candidate = await Candidate.findOne({ id: candidateId });
       if (candidate) {
         if (candidate.resumeUrl) {
-          const filename = candidate.resumeUrl.replace('/uploads/', '');
+          const filename = candidate.resumeUrl.replace('/api/uploads/', '').replace('/uploads/', '');
           const filepath = path.join(UPLOADS_DIR, filename);
           if (fs.existsSync(filepath)) {
             try { fs.unlinkSync(filepath); } catch (e) {}
@@ -1199,7 +1523,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
       const candidate = await Candidate.findOne({ id: candidateId });
       if (candidate) {
         if (candidate.resumeUrl) {
-          const filename = candidate.resumeUrl.replace('/uploads/', '');
+          const filename = candidate.resumeUrl.replace('/api/uploads/', '').replace('/uploads/', '');
           const filepath = path.join(UPLOADS_DIR, filename);
           if (fs.existsSync(filepath)) {
             try { fs.unlinkSync(filepath); } catch (e) {}
@@ -1210,37 +1534,43 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
       }
 
       let settings = await Settings.findById('global');
-      const ownCategoryResult = await scoreCandidateByOwnCategory(parsedData);
+
+      let ownCategoryResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
+      let scoringResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
+      let generatedTags = [];
 
       let job = null;
-      let scoringResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
       if (jobId) {
         job = await Job.findOne({ id: jobId });
       }
-      if (job) {
-        scoringResult = await scoreCandidate(parsedData, job);
-      }
 
-      let generatedTags = [];
       try {
-        generatedTags = await generateTags(parsedData, job || { title: 'General', description: '' }, settings?.tagPreferences || []);
-      } catch (e) {
-        console.warn('Tag generation failed during resolve delete-before:', e.message);
+        console.log('Running resolve delete-before scoring in parallel...');
+        const results = await Promise.all([
+          scoreCandidateByOwnCategory(data).catch(e => { console.error('Own category score failed:', e.message); return null; }),
+          job ? scoreCandidate(data, job).catch(e => { console.error('Job match score failed:', e.message); return null; }) : Promise.resolve(null),
+          generateTags(data, job || { title: 'General', description: '' }, settings?.tagPreferences || []).catch(e => { console.error('Tag generation failed:', e.message); return null; })
+        ]);
+        if (results[0]) ownCategoryResult = results[0];
+        if (results[1]) scoringResult = results[1];
+        if (results[2]) generatedTags = results[2];
+      } catch (err) {
+        console.error('Parallel resolve delete-before scoring failed:', err.message);
       }
 
       const newCandidate = new Candidate({
         id: `candidate-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         jobId,
-        name: parsedData.name || 'Unknown',
-        email: parsedData.email || '',
-        phone: parsedData.phone || '',
-        linkedinUrl: parsedData.linkedinUrl || '',
-        skills: parsedData.skills || [],
-        experience: parsedData.experience || [],
-        education: parsedData.education || [],
+        name: data.name || 'Unknown',
+        email: data.email || '',
+        phone: data.phone || '',
+        linkedinUrl: data.linkedinUrl || '',
+        skills: data.skills || [],
+        experience: data.experience || [],
+        education: data.education || [],
         tags: generatedTags,
         stage: 'Inbox',
-        resumeUrl: tempFile ? `/uploads/${tempFile}` : '',
+        resumeUrl: tempFile ? `/api/uploads/${tempFile}` : '',
         resumeText: pdfText,
         matchScore: scoringResult.score || 0,
         matchingSkills: scoringResult.matchingSkills || [],
@@ -1251,9 +1581,10 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
         ownCategoryMissingSkills: ownCategoryResult.missingSkills || [],
         ownCategoryExplanation: ownCategoryResult.reasoning || '',
         comments: '',
-        seniorityLevel: parsedData.seniorityLevel || 'Mid',
+        seniorityLevel: data.seniorityLevel || 'Mid',
         hrQuestions: [],
-        technicalQuestions: []
+        technicalQuestions: [],
+        projects: data.projects || []
       });
 
       try {
@@ -1279,7 +1610,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
             status: 'success', 
             candidateId: newCandidate.id,
             candidateName: newCandidate.name,
-            extractedData: parsedData,
+            extractedData: data,
             error: ''
           }
         ).catch(e => console.error('Failed to update ingestion log:', e));
@@ -1297,37 +1628,43 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
     } else {
       if (parsedData) {
         let settings = await Settings.findById('global');
-        const ownCategoryResult = await scoreCandidateByOwnCategory(parsedData);
+
+        let ownCategoryResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
+        let scoringResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
+        let generatedTags = [];
 
         let job = null;
-        let scoringResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
         if (jobId) {
           job = await Job.findOne({ id: jobId });
         }
-        if (job) {
-          scoringResult = await scoreCandidate(parsedData, job);
-        }
 
-        let generatedTags = [];
         try {
-          generatedTags = await generateTags(parsedData, job || { title: 'General', description: '' }, settings?.tagPreferences || []);
-        } catch (e) {
-          console.warn('Tag generation failed during resolve create:', e.message);
+          console.log('Running resolve-create scoring in parallel...');
+          const results = await Promise.all([
+            scoreCandidateByOwnCategory(data).catch(e => { console.error('Own category score failed:', e.message); return null; }),
+            job ? scoreCandidate(data, job).catch(e => { console.error('Job match score failed:', e.message); return null; }) : Promise.resolve(null),
+            generateTags(data, job || { title: 'General', description: '' }, settings?.tagPreferences || []).catch(e => { console.error('Tag generation failed:', e.message); return null; })
+          ]);
+          if (results[0]) ownCategoryResult = results[0];
+          if (results[1]) scoringResult = results[1];
+          if (results[2]) generatedTags = results[2];
+        } catch (err) {
+          console.error('Parallel resolve-create scoring failed:', err.message);
         }
 
         const newCandidate = new Candidate({
           id: `candidate-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           jobId,
-          name: parsedData.name || 'Unknown',
-          email: parsedData.email || '',
-          phone: parsedData.phone || '',
-          linkedinUrl: parsedData.linkedinUrl || '',
-          skills: parsedData.skills || [],
-          experience: parsedData.experience || [],
-          education: parsedData.education || [],
+          name: data.name || 'Unknown',
+          email: data.email || '',
+          phone: data.phone || '',
+          linkedinUrl: data.linkedinUrl || '',
+          skills: data.skills || [],
+          experience: data.experience || [],
+          education: data.education || [],
           tags: generatedTags,
           stage: 'Inbox',
-          resumeUrl: tempFile ? `/uploads/${tempFile}` : '',
+          resumeUrl: tempFile ? `/api/uploads/${tempFile}` : '',
           resumeText: pdfText,
           matchScore: scoringResult.score || 0,
           matchingSkills: scoringResult.matchingSkills || [],
@@ -1338,9 +1675,10 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
           ownCategoryMissingSkills: ownCategoryResult.missingSkills || [],
           ownCategoryExplanation: ownCategoryResult.reasoning || '',
           comments: '',
-          seniorityLevel: parsedData.seniorityLevel || 'Mid',
+          seniorityLevel: data.seniorityLevel || 'Mid',
           hrQuestions: [],
-          technicalQuestions: []
+          technicalQuestions: [],
+          projects: data.projects || []
         });
 
         try {
@@ -1366,7 +1704,7 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
               status: 'success', 
               candidateId: newCandidate.id,
               candidateName: newCandidate.name,
-              extractedData: parsedData,
+              extractedData: data,
               error: ''
             }
           ).catch(e => console.error('Failed to update ingestion log:', e));
@@ -1407,17 +1745,20 @@ app.post('/api/candidates/upload/resolve', async (req, res) => {
   }
 });
 
-app.get('/api/candidates', async (req, res) => {
+app.get('/api/candidates', authenticateToken, async (req, res) => {
+  if (req.user.role === 'manager') {
+    return res.json(await Candidate.find({ assignedTo: req.user.email }));
+  }
   res.json(await Candidate.find());
 });
 
-app.delete('/api/candidates/:id', async (req, res) => {
+app.delete('/api/candidates/:id', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const candidate = await Candidate.findOne({ id: req.params.id });
     if (!candidate) return res.status(404).json({ error: 'Candidate not found.' });
 
     if (candidate.resumeUrl) {
-      const filename = candidate.resumeUrl.replace('/uploads/', '');
+      const filename = candidate.resumeUrl.replace('/api/uploads/', '').replace('/uploads/', '');
       const filepath = path.join(UPLOADS_DIR, filename);
       if (fs.existsSync(filepath)) {
         try { fs.unlinkSync(filepath); } catch (e) {}
@@ -1438,7 +1779,7 @@ app.delete('/api/candidates/:id', async (req, res) => {
   }
 });
 
-app.post('/api/gmail/emails/:id/dismiss', async (req, res) => {
+app.post('/api/gmail/emails/:id/dismiss', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const messageId = req.params.id;
     await ProcessedEmail.create({ messageId });
@@ -1466,7 +1807,7 @@ app.patch('/api/candidates/:id/stage', async (req, res) => {
   }
 });
 
-app.post('/api/candidates/:id/send-email', async (req, res) => {
+app.post('/api/candidates/:id/send-email', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   const { subject, body } = req.body;
   const emailConfig = await getEmailConfig();
 
@@ -1492,7 +1833,54 @@ app.post('/api/candidates/:id/send-email', async (req, res) => {
   }
 });
 
-app.post('/api/candidates/:id/generate-questions', async (req, res) => {
+app.post('/api/candidates/:id/re-score', authenticateToken, async (req, res) => {
+  try {
+    const candidate = await Candidate.findOne({ id: req.params.id });
+    if (!candidate) return res.status(404).json({ error: 'Candidate not found.' });
+
+    console.log(`Re-scoring candidate ${candidate.name}...`);
+    
+    const parsedData = {
+      name: candidate.name,
+      email: candidate.email,
+      skills: candidate.skills,
+      experience: candidate.experience,
+      education: candidate.education,
+      seniorityLevel: candidate.seniorityLevel,
+      projects: candidate.projects
+    };
+
+    const ownCategoryResult = await scoreCandidateByOwnCategory(parsedData);
+    candidate.ownCategoryScore = ownCategoryResult.score || 0;
+    candidate.ownCategoryMatchingSkills = ownCategoryResult.matchingSkills || [];
+    candidate.ownCategoryMissingSkills = ownCategoryResult.missingSkills || [];
+    candidate.ownCategoryExplanation = ownCategoryResult.reasoning || '';
+
+    let job = null;
+    if (candidate.jobId) {
+      job = await Job.findOne({ id: candidate.jobId });
+    }
+    if (!job) {
+      job = await Job.findOne({ status: 'Active' });
+    }
+
+    if (job) {
+      const scoringResult = await scoreCandidate(parsedData, job);
+      candidate.matchScore = scoringResult.score || 0;
+      candidate.matchingSkills = scoringResult.matchingSkills || [];
+      candidate.missingSkills = scoringResult.missingSkills || [];
+      candidate.matchExplanation = scoringResult.reasoning || '';
+    }
+
+    await candidate.save();
+    res.json(candidate);
+  } catch (error) {
+    console.error('Failed to re-score candidate:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/candidates/:id/generate-questions', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const candidate = await Candidate.findOne({ id: req.params.id });
     if (!candidate) {
@@ -1544,7 +1932,7 @@ app.post('/api/candidates/:id/generate-questions', async (req, res) => {
           }
         }
       },
-      { new: true }
+      { returnDocument: 'after' }
     );
     res.json(updatedCandidate);
   } catch (error) {
@@ -1553,11 +1941,11 @@ app.post('/api/candidates/:id/generate-questions', async (req, res) => {
   }
 });
 
-app.get('/api/jobs', async (req, res) => {
+app.get('/api/jobs', authenticateToken, async (req, res) => {
   res.json(await Job.find());
 });
 
-app.post('/api/jobs', async (req, res) => {
+app.post('/api/jobs', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const { title, department, location, description, requirements, postings } = req.body;
     const newJob = new Job({ 
@@ -1577,7 +1965,7 @@ app.post('/api/jobs', async (req, res) => {
   }
 });
 
-app.post('/api/jobs/generate', async (req, res) => {
+app.post('/api/jobs/generate', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const { title, department, location, skills } = req.body;
     if (!title) {
@@ -1591,13 +1979,13 @@ app.post('/api/jobs/generate', async (req, res) => {
   }
 });
 
-app.post('/api/jobs/:id/postings', async (req, res) => {
+app.post('/api/jobs/:id/postings', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const { postings } = req.body;
     const job = await Job.findOneAndUpdate(
       { id: req.params.id },
       { $set: { postings } },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!job) return res.status(404).json({ error: 'Job not found' });
     res.json(job);
@@ -1607,63 +1995,74 @@ app.post('/api/jobs/:id/postings', async (req, res) => {
   }
 });
 
-app.delete('/api/jobs/:id', async (req, res) => {
+app.delete('/api/jobs/:id', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   await Job.deleteOne({ id: req.params.id });
   res.json({ success: true });
 });
 
-app.get('/api/settings', async (req, res) => {
-  const settings = await Settings.findById('global');
-  if (!settings) return res.json({});
-  const safeSettings = settings.toObject();
-  if (safeSettings.emailPassword) safeSettings.emailPassword = '••••••••';
-  if (safeSettings.geminiApiKey) safeSettings.geminiApiKey = '••••••••';
-  if (safeSettings.openaiApiKey) safeSettings.openaiApiKey = '••••••••';
-  if (safeSettings.claudeApiKey) safeSettings.claudeApiKey = '••••••••';
-  if (safeSettings.outlookClientSecret) safeSettings.outlookClientSecret = '••••••••';
-  res.json(safeSettings);
-});
-
-app.post('/api/settings', async (req, res) => {
-  const allowedSettingsKeys = [
-    'tagPreferences', 'sourcingAgentActive', 'emailProvider', 'emailUser', 'emailPassword',
-    'outlookClientId', 'outlookTenantId', 'outlookClientSecret', 'outlookUserEmail',
-    'aiProvider', 'geminiApiKey', 'openaiApiKey', 'claudeApiKey', 'ollamaUrl', 'ollamaModel',
-    'rankAccordingToJob'
-  ];
-
-  const updateData = {};
-  for (const key of allowedSettingsKeys) {
-    if (req.body[key] !== undefined) {
-      updateData[key] = req.body[key];
-    }
+app.get('/api/settings', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const settings = await Settings.findById('global');
+    if (!settings) return res.json({});
+    const safeSettings = settings.toObject();
+    if (safeSettings.emailPassword) safeSettings.emailPassword = '••••••••';
+    if (safeSettings.geminiApiKey) safeSettings.geminiApiKey = '••••••••';
+    if (safeSettings.openaiApiKey) safeSettings.openaiApiKey = '••••••••';
+    if (safeSettings.claudeApiKey) safeSettings.claudeApiKey = '••••••••';
+    if (safeSettings.outlookClientSecret) safeSettings.outlookClientSecret = '••••••••';
+    res.json(safeSettings);
+  } catch (error) {
+    console.error('Failed to get settings:', error);
+    res.status(500).json({ error: error.message });
   }
-
-  const settings = await Settings.findOneAndUpdate(
-    { _id: 'global' }, 
-    { $set: updateData }, 
-    { new: true, upsert: true }
-  );
-  
-  // Trigger background connection test immediately
-  testConnectionInBackground().catch(err => console.error('Background connection test failed:', err));
-
-  const safeSettings = settings.toObject();
-  if (safeSettings.emailPassword) safeSettings.emailPassword = '••••••••';
-  if (safeSettings.geminiApiKey) safeSettings.geminiApiKey = '••••••••';
-  if (safeSettings.openaiApiKey) safeSettings.openaiApiKey = '••••••••';
-  if (safeSettings.claudeApiKey) safeSettings.claudeApiKey = '••••••••';
-  if (safeSettings.outlookClientSecret) safeSettings.outlookClientSecret = '••••••••';
-  res.json(safeSettings);
 });
 
-app.get('/api/search/tags', (req, res) => res.json({ matches: searchIndex.searchTags(req.query.q) }));
-app.get('/api/search/suggestions', (req, res) => res.json({ suggestions: searchIndex.getSuggestions(req.query.prefix || '') }));
-app.get('/api/search/tag-cloud', (req, res) => res.json({ cloud: searchIndex.getTagCloud() }));
+app.post('/api/settings', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const allowedSettingsKeys = [
+      'tagPreferences', 'sourcingAgentActive', 'emailProvider', 'emailUser', 'emailPassword',
+      'outlookClientId', 'outlookTenantId', 'outlookClientSecret', 'outlookUserEmail',
+      'aiProvider', 'geminiApiKey', 'openaiApiKey', 'claudeApiKey',
+      'ollamaUrl', 'ollamaModel', 'ollamaEmbeddingModel',
+      'rankAccordingToJob'
+    ];
+
+    const updateData = {};
+    for (const key of allowedSettingsKeys) {
+      if (req.body[key] !== undefined) {
+        updateData[key] = req.body[key];
+      }
+    }
+
+    const settings = await Settings.findOneAndUpdate(
+      { _id: 'global' }, 
+      { $set: updateData }, 
+      { returnDocument: 'after', upsert: true }
+    );
+    
+    // Trigger background connection test immediately
+    testConnectionInBackground().catch(err => console.error('Background connection test failed:', err));
+
+    const safeSettings = settings.toObject();
+    if (safeSettings.emailPassword) safeSettings.emailPassword = '••••••••';
+    if (safeSettings.geminiApiKey) safeSettings.geminiApiKey = '••••••••';
+    if (safeSettings.openaiApiKey) safeSettings.openaiApiKey = '••••••••';
+    if (safeSettings.claudeApiKey) safeSettings.claudeApiKey = '••••••••';
+    if (safeSettings.outlookClientSecret) safeSettings.outlookClientSecret = '••••••••';
+    res.json(safeSettings);
+  } catch (error) {
+    console.error('Failed to update settings:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/search/tags', authenticateToken, (req, res) => res.json({ matches: searchIndex.searchTags(req.query.q) }));
+app.get('/api/search/suggestions', authenticateToken, (req, res) => res.json({ suggestions: searchIndex.getSuggestions(req.query.prefix || '') }));
+app.get('/api/search/tag-cloud', authenticateToken, (req, res) => res.json({ cloud: searchIndex.getTagCloud() }));
 
 // ==================== RAG SEARCH ROUTES ====================
 
-app.post('/api/rag/search', async (req, res) => {
+app.post('/api/rag/search', authenticateToken, async (req, res) => {
   try {
     const { query, topK = 10, jobId = null } = req.body;
     if (!query || query.trim().length === 0) {
@@ -1677,7 +2076,7 @@ app.post('/api/rag/search', async (req, res) => {
   }
 });
 
-app.post('/api/rag/ask', async (req, res) => {
+app.post('/api/rag/ask', authenticateToken, async (req, res) => {
   try {
     const { query, topK = 5 } = req.body;
     if (!query || query.trim().length === 0) {
@@ -1691,7 +2090,7 @@ app.post('/api/rag/ask', async (req, res) => {
   }
 });
 
-app.post('/api/rag/reindex', async (req, res) => {
+app.post('/api/rag/reindex', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     res.json({ message: 'Reindexing started in background.' });
     // Run in background after response is sent
@@ -1706,7 +2105,7 @@ app.post('/api/rag/reindex', async (req, res) => {
   }
 });
 
-app.get('/api/rag/status', async (req, res) => {
+app.get('/api/rag/status', authenticateToken, async (req, res) => {
   try {
     const status = await getRAGStatus();
     res.json(status);
@@ -1716,22 +2115,32 @@ app.get('/api/rag/status', async (req, res) => {
   }
 });
 
-app.get('/api/settings/tag-preferences', async (req, res) => {
-  const settings = await Settings.findById('global');
-  res.json(settings?.tagPreferences || []);
+app.get('/api/settings/tag-preferences', authenticateToken, async (req, res) => {
+  try {
+    const settings = await Settings.findById('global');
+    res.json(settings?.tagPreferences || []);
+  } catch (error) {
+    console.error('Failed to get tag preferences:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-app.post('/api/settings/tag-preferences', async (req, res) => {
-  const settings = await Settings.findOneAndUpdate(
-    { _id: 'global' }, 
-    { $set: { tagPreferences: req.body.tagPreferences || [] } }, 
-    { new: true, upsert: true }
-  );
-  res.json(settings.tagPreferences);
+app.post('/api/settings/tag-preferences', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const settings = await Settings.findOneAndUpdate(
+      { _id: 'global' }, 
+      { $set: { tagPreferences: req.body.tagPreferences || [] } }, 
+      { returnDocument: 'after', upsert: true }
+    );
+    res.json(settings.tagPreferences);
+  } catch (error) {
+    console.error('Failed to update tag preferences:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Gmail connection test
-app.post('/api/gmail/test-connection', async (req, res) => {
+app.post('/api/gmail/test-connection', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const emailConfig = await getEmailConfig();
     const user = emailConfig.user;
@@ -1784,7 +2193,7 @@ app.post('/api/gmail/test-connection', async (req, res) => {
 });
 
 // Outlook connection test
-app.post('/api/outlook/test-connection', async (req, res) => {
+app.post('/api/outlook/test-connection', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const settings = await Settings.findById('global');
     const clientId = settings?.outlookClientId || process.env.OUTLOOK_CLIENT_ID || process.env.MICROSOFT_CLIENT_ID;
@@ -1834,7 +2243,7 @@ app.post('/api/outlook/test-connection', async (req, res) => {
 });
 
 // Email logs endpoint
-app.get('/api/email-logs', async (req, res) => {
+app.get('/api/email-logs', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const logs = await EmailLog.find().sort({ timestamp: -1 }).limit(100);
     res.json({ logs });
@@ -1844,7 +2253,7 @@ app.get('/api/email-logs', async (req, res) => {
 });
 
 // Pre-register Ingestion Logs for batch upload
-app.post('/api/ingestion-logs/pre-register', async (req, res) => {
+app.post('/api/ingestion-logs/pre-register', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const { files } = req.body; // Array of { fileName, source }
     if (!files || !Array.isArray(files)) {
@@ -1872,7 +2281,7 @@ app.post('/api/ingestion-logs/pre-register', async (req, res) => {
 });
 
 // Ingestion logs endpoint
-app.get('/api/ingestion-logs', async (req, res) => {
+app.get('/api/ingestion-logs', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const logs = await IngestionLog.find().sort({ timestamp: -1 }).limit(200);
     res.json({ logs });
@@ -1888,9 +2297,9 @@ const server = app.listen(PORT, () => {
   console.log(`=================================================\n`);
 });
 
-// Set server timeouts to 10 minutes (600,000 ms) for slow local LLMs
-server.timeout = 600000;
-server.headersTimeout = 601000;
-server.requestTimeout = 600000;
-server.keepAliveTimeout = 600000;
+// Set server timeouts to 30 minutes (1,800,000 ms) for slow local LLMs
+server.timeout = 1800000;
+server.headersTimeout = 1801000;
+server.requestTimeout = 1800000;
+server.keepAliveTimeout = 1800000;
 

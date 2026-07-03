@@ -2,6 +2,7 @@
 process.env.PORT = '5001';
 process.env.MONGO_URI = 'mongodb://admin:password@localhost:27017/talentflow_test?authSource=admin';
 process.env.AI_PROVIDER = 'gemini'; // Force to Gemini or whatever to hit the mock
+process.env.NODE_ENV = 'test';
 
 // Mock global fetch to intercept outgoing LLM calls
 const originalFetch = globalThis.fetch;

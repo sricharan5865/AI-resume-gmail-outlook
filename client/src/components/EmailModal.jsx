@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Send, CheckCircle2, AlertCircle, Loader, Mail } from 'lucide-react';
 
-export default function EmailModal({ candidate, job, templates, onClose, onEmailSent, backendUrl }) {
+export default function EmailModal({ candidate, job, templates, onClose, onEmailSent, backendUrl, token }) {
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [sending, setSending] = useState(false);
@@ -53,7 +53,8 @@ export default function EmailModal({ candidate, job, templates, onClose, onEmail
       const res = await fetch(`${backendUrl}/api/candidates/${candidate.id}/send-email`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ subject, body })
       });

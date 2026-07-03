@@ -15,7 +15,8 @@ export default function PipelineBoard({
   onManualUpload,
   onCandidateDeleted,
   backendUrl,
-  rankAccordingToJob
+  rankAccordingToJob,
+  token
 }) {
   const [selectedFilterJobId, setSelectedFilterJobId] = useState('');
   const [uploadingFile, setUploadingFile] = useState(false);
@@ -97,7 +98,10 @@ export default function PipelineBoard({
     if (!window.confirm(`Are you absolutely sure? This will permanently delete candidate "${name}" from the system and cannot be undone.`)) return;
     try {
       const res = await fetch(`${backendUrl}/api/candidates/${candidateId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
       });
       if (!res.ok) {
         const errData = await res.json();
@@ -142,7 +146,8 @@ export default function PipelineBoard({
       const res = await fetch(`${backendUrl}/api/candidates/${candidateId}/stage`, {
         method: 'PATCH',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ stage })
       });
@@ -211,6 +216,9 @@ export default function PipelineBoard({
 
           const res = await fetch(`${backendUrl}/api/candidates/upload`, {
             method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            },
             body: formData
           });
 
@@ -264,7 +272,6 @@ export default function PipelineBoard({
     } finally {
       setUploadingFile(false);
       setUploadProgress('');
-      setUploadJobId('');
       // Clear input
       e.target.value = null;
     }
@@ -280,7 +287,8 @@ export default function PipelineBoard({
       const res = await fetch(`${backendUrl}/api/candidates/upload/resolve`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           action,
@@ -677,7 +685,7 @@ export default function PipelineBoard({
 
                           {/* Skill Badges (Top 3) */}
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '16px' }}>
-                            {candidate.skills.slice(0, 3).map((skill, index) => (
+                            {(candidate.skills ? candidate.skills.flatMap(s => (s.includes(':') ? s.split(':')[1] : s).split(',').map(x => x.trim()).filter(x => x)) : []).slice(0, 3).map((skill, index) => (
                               <span 
                                 key={index} 
                                 style={{ 
@@ -693,9 +701,9 @@ export default function PipelineBoard({
                                 {skill}
                               </span>
                             ))}
-                            {candidate.skills.length > 3 && (
+                            {(candidate.skills ? candidate.skills.flatMap(s => (s.includes(':') ? s.split(':')[1] : s).split(',').map(x => x.trim()).filter(x => x)) : []).length > 3 && (
                               <span style={{ fontSize: '10px', color: 'var(--text-muted)', padding: '2px 4px' }}>
-                                +{candidate.skills.length - 3}
+                                +{(candidate.skills ? candidate.skills.flatMap(s => (s.includes(':') ? s.split(':')[1] : s).split(',').map(x => x.trim()).filter(x => x)) : []).length - 3}
                               </span>
                             )}
                           </div>

@@ -8,12 +8,19 @@ import {
 const HISTORY_KEY = 'rag_search_history';
 const MAX_HISTORY = 10;
 
-function getHistory() {
+function safeLocalStorageGet(key, fallback) {
   try {
-    return JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
-  } catch {
-    return [];
+    const value = localStorage.getItem(key);
+    if (!value) return fallback;
+    return JSON.parse(value);
+  } catch (error) {
+    console.error(`Error parsing localStorage key "${key}":`, error);
+    return fallback;
   }
+}
+
+function getHistory() {
+  return safeLocalStorageGet(HISTORY_KEY, []);
 }
 
 function pushHistory(query) {
@@ -28,7 +35,7 @@ function clearHistory() {
   return [];
 }
 
-export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidate, showToast, BACKEND_URL }) {
+export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidate, showToast, BACKEND_URL, token }) {
   const [mode, setMode] = useState('search'); // 'search' | 'ask'
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -63,7 +70,11 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
 
   const fetchTagCloud = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/search/tag-cloud`);
+      const res = await fetch(`${BACKEND_URL}/api/search/tag-cloud`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         setTagCloud(data.cloud || []);
@@ -75,7 +86,11 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
 
   const fetchSuggestions = async (prefix) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/search/suggestions?prefix=${encodeURIComponent(prefix)}`);
+      const res = await fetch(`${BACKEND_URL}/api/search/suggestions?prefix=${encodeURIComponent(prefix)}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         setSuggestions(data.suggestions || []);
@@ -94,30 +109,61 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
 
   const fetchStatus = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/rag/status`);
+      const res = await fetch(`${BACKEND_URL}/api/rag/status`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         setRagStatus(data);
+        return data;
       }
     } catch (err) {
       console.error('Failed to fetch RAG status:', err);
     }
+    return null;
   };
 
   const handleReindex = async () => {
     setReindexing(true);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/rag/reindex`, { method: 'POST' });
+      const res = await fetch(`${BACKEND_URL}/api/rag/reindex`, { 
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       if (res.ok) {
-        showToast('Reindexing started successfully!', 'success');
-        // Poll status after a short delay
-        setTimeout(fetchStatus, 2000);
+        showToast('Reindexing started — polling for updates...', 'success');
+        // Poll status every 5s for up to 2 minutes
+        let attempts = 0;
+        const maxAttempts = 24; // 24 × 5s = 120s
+        const pollInterval = setInterval(async () => {
+          attempts++;
+          await fetchStatus();
+          // Stop polling once we have chunks or hit the error state or timeout
+          if (attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            setReindexing(false);
+            showToast('Reindex timed out — check server logs for errors.', 'warning');
+          }
+        }, 5000);
+        // Also check once quickly after 3s
+        setTimeout(async () => {
+          const data = await fetchStatus();
+          if (data && data.totalChunks > 0) {
+            clearInterval(pollInterval);
+            setReindexing(false);
+            showToast(`Reindex complete! ${data.totalCandidates} candidates indexed.`, 'success');
+          }
+        }, 3000);
       } else {
         showToast('Failed to start reindexing.', 'error');
+        setReindexing(false);
       }
     } catch (err) {
       showToast('Reindex request failed.', 'error');
-    } finally {
       setReindexing(false);
     }
   };
@@ -136,7 +182,10 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
       if (mode === 'search') {
         const res = await fetch(`${BACKEND_URL}/api/rag/search`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify({ query: searchQuery, topK: 10 })
         });
         if (!res.ok) throw new Error(`Search failed (${res.status})`);
@@ -146,7 +195,10 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
       } else {
         const res = await fetch(`${BACKEND_URL}/api/rag/ask`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify({ query: searchQuery, topK: 5 })
         });
         if (!res.ok) throw new Error(`Ask AI failed (${res.status})`);
@@ -532,7 +584,8 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
               const candidate = candidates.find(c => c.id === (rawCandidate.id || rawCandidate.candidateId)) || rawCandidate;
               const score = result.score ?? result.relevanceScore ?? 0;
               const matchedSections = result.matchedSections || result.matches || [];
-              const skills = candidate.skills || candidate.tags?.filter(t => t.category === 'tech')?.map(t => t.value) || [];
+              const rawSkills = candidate.skills || candidate.tags?.filter(t => t.category === 'tech')?.map(t => t.value) || [];
+              const skills = rawSkills.flatMap(s => (s.includes(':') ? s.split(':')[1] : s).split(',').map(x => x.trim()).filter(x => x));
               const name = candidate.name || 'Unknown Candidate';
               const email = candidate.email || '';
               const seniority = candidate.seniorityLevel || candidate.seniority || candidate.tags?.find(t => t.category === 'seniority')?.value || '';
@@ -733,11 +786,22 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
         </button>
       </div>
 
-      {/* Indexing Warning */}
-      {ragStatus && (ragStatus.totalChunks ?? ragStatus.chunks) === 0 && (
+      {/* Indexing Warning / Error */}
+      {ragStatus && (ragStatus.totalChunks ?? ragStatus.chunks) === 0 && !reindexing && (
         <div className="rag-indexing-notice">
-          <Loader2 size={14} className="rag-spin" />
+          <Loader2 size={14} />
           <span>No indexed data found. Click "Reindex" to index your candidates for AI search.</span>
+        </div>
+      )}
+      {reindexing && (
+        <div className="rag-indexing-notice" style={{ background: 'rgba(99,102,241,0.12)', borderColor: 'rgba(99,102,241,0.3)' }}>
+          <Loader2 size={14} className="rag-spin" />
+          <span>Reindexing in progress... This may take up to 2 minutes.</span>
+        </div>
+      )}
+      {ragStatus?.lastReindexError && (
+        <div className="rag-indexing-notice" style={{ background: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.35)', color: '#f87171' }}>
+          <span>⚠ Last reindex had errors: {ragStatus.lastReindexError} — Check the server terminal for details.</span>
         </div>
       )}
     </div>

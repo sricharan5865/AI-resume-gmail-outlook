@@ -47,16 +47,26 @@ const candidateSchema = new mongoose.Schema({
   hrQuestions: [
     {
       question: String,
-      answer: String
+      answer: String,
+      importance: { type: String, default: 'Standard' }
     }
   ],
   technicalQuestions: [
     {
       question: String,
-      answer: String
+      answer: String,
+      importance: { type: String, default: 'Standard' }
+    }
+  ],
+  projects: [
+    {
+      name: String,
+      description: String,
+      matchingSkills: [String]
     }
   ],
   createdAt: { type: Date, default: Date.now },
+  assignedTo: { type: String, default: null },
   history: [
     {
       date: String,
@@ -65,6 +75,9 @@ const candidateSchema = new mongoose.Schema({
     }
   ]
 });
+
+candidateSchema.index({ jobId: 1 });
+candidateSchema.index({ assignedTo: 1 });
 
 const jobSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
@@ -102,8 +115,9 @@ const settingsSchema = new mongoose.Schema({
   geminiApiKey: { type: String, default: '' },
   openaiApiKey: { type: String, default: '' },
   claudeApiKey: { type: String, default: '' },
-  ollamaUrl: { type: String, default: 'http://localhost:11434' },
+  ollamaUrl: { type: String, default: 'https://istgenai.smartgeoapps.com/' },
   ollamaModel: { type: String, default: 'llama3' },
+  ollamaEmbeddingModel: { type: String, default: 'gpt-oss:20b' },
   rankAccordingToJob: { type: Boolean, default: true }
 });
 
@@ -157,4 +171,13 @@ export const ProcessedEmail = mongoose.model('ProcessedEmail', processedEmailSch
 export const EmailLog = mongoose.model('EmailLog', emailLogSchema);
 export const IngestionLog = mongoose.model('IngestionLog', ingestionLogSchema);
 export const ResumeChunk = mongoose.model('ResumeChunk', resumeChunkSchema);
+
+const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, enum: ['admin', 'recruiter', 'manager'], default: 'manager' },
+  createdAt: { type: Date, default: Date.now }
+});
+
+export const User = mongoose.model('RbacUser', userSchema, 'rbac_users');
 

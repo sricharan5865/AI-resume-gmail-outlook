@@ -3,6 +3,46 @@ import { Settings } from './models.js';
 
 dotenv.config();
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => controller.abort());
+  }
+  
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  
+  try {
+    const response = await fetch(url, { ...options, signal });
+    return response;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs / 1000} seconds`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function safeParseResponseJson(response) {
+  const contentType = (response.headers && typeof response.headers.get === 'function')
+    ? response.headers.get('content-type') || ''
+    : '';
+  if (contentType && !contentType.includes('application/json')) {
+    const text = await response.text();
+    throw new Error(`Expected application/json response, but got content-type "${contentType}". Response snippet: ${text.substring(0, 200)}`);
+  }
+  try {
+    return await response.json();
+  } catch (err) {
+    throw new Error(`Failed to parse JSON response: ${err.message}`);
+  }
+}
+
 /** @type {Map<string, number[]>} LRU cache for query embeddings (max 200 entries) */
 const queryEmbeddingCache = new Map();
 const CACHE_MAX_SIZE = 200;
@@ -21,8 +61,18 @@ export async function getEmbeddingConfig() {
   }
 
   const provider = settings?.aiProvider || 'gemini';
+
+  if (provider === 'ollama') {
+    return {
+      apiKey: '',
+      isOpenRouter: false,
+      provider: 'ollama',
+      providerDisplayName: 'Ollama',
+      settings
+    };
+  }
+
   let apiKey;
-  
   if (provider === 'gemini') {
     apiKey = settings?.geminiApiKey || process.env.GEMINI_API_KEY;
   } else if (provider === 'openai') {
@@ -47,7 +97,65 @@ export async function getEmbeddingConfig() {
   };
   const providerDisplayName = providerNames[provider] || 'AI';
 
-  return { apiKey, isOpenRouter, provider: embeddingProvider, providerDisplayName };
+  return { apiKey, isOpenRouter, provider: embeddingProvider, providerDisplayName, settings };
+}
+
+/**
+ * Generates embeddings for a batch of texts via the Ollama API.
+ * @param {string[]} texts - Array of text strings to embed
+ * @param {any} settings - System settings containing Ollama URL and model
+ * @returns {Promise<number[][]>} Array of embedding vectors
+ */
+async function embedViaOllama(texts, settings) {
+  const ollamaUrl = (settings?.ollamaUrl || 'http://localhost:11434').replace(/\/+$/, '');
+  // Use the model configured in Settings; fall back to the main model if embedding model is not set separately
+  const ollamaModel = settings?.ollamaEmbeddingModel || settings?.ollamaModel || 'gpt-oss:20b';
+
+  // Try the modern batch endpoint first
+  try {
+    const response = await fetchWithTimeout(`${ollamaUrl}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel,
+        input: texts
+      })
+    }, 180000);
+
+    if (response.ok) {
+      const result = await safeParseResponseJson(response);
+      if (result && result.embeddings && Array.isArray(result.embeddings)) {
+        return result.embeddings;
+      }
+    }
+  } catch (e) {
+    console.warn(`Ollama batch /api/embed failed, falling back to legacy /api/embeddings: ${e.message}`);
+  }
+
+  // Fallback to legacy endpoint (one at a time)
+  const results = [];
+  for (const text of texts) {
+    const response = await fetchWithTimeout(`${ollamaUrl}/api/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel,
+        prompt: text
+      })
+    }, 60000);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Ollama legacy API error: ${response.status} - ${errorText}`);
+    }
+
+    const result = await safeParseResponseJson(response);
+    if (!result || !Array.isArray(result.embedding)) {
+      throw new Error(`Invalid response format from Ollama legacy API: ${JSON.stringify(result)}`);
+    }
+    results.push(result.embedding);
+  }
+  return results;
 }
 
 /**
@@ -89,7 +197,7 @@ async function withRetry(apiCallFn, maxRetries = 3) {
  * @returns {Promise<number[][]>} Array of embedding vectors
  */
 async function embedViaOpenRouter(texts, apiKey, providerDisplayName = 'AI') {
-  const response = await fetch('https://openrouter.ai/api/v1/embeddings', {
+  const response = await fetchWithTimeout('https://openrouter.ai/api/v1/embeddings', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -100,20 +208,20 @@ async function embedViaOpenRouter(texts, apiKey, providerDisplayName = 'AI') {
       input: texts,
       dimensions: 768
     })
-  });
+  }, 30000);
 
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`${providerDisplayName} Embeddings API error: ${response.status} - ${errorText}`);
   }
 
-  const result = await response.json();
-  if (!result.data || !Array.isArray(result.data)) {
+  const result = await safeParseResponseJson(response);
+  if (!result || !result.data || !Array.isArray(result.data)) {
     throw new Error(`Invalid response format from ${providerDisplayName} Embeddings: ${JSON.stringify(result)}`);
   }
   // Sort by index to ensure correct ordering
-  const sorted = result.data.sort((a, b) => a.index - b.index);
-  return sorted.map(item => item.embedding);
+  const sorted = [...result.data].sort((a, b) => (a?.index || 0) - (b?.index || 0));
+  return sorted.map(item => item?.embedding || []);
 }
 
 /**
@@ -134,19 +242,22 @@ async function embedViaGemini(texts, apiKey, taskType = 'RETRIEVAL_DOCUMENT') {
     }))
   };
 
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(requestBody)
-  });
+  }, 30000);
 
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Gemini Embeddings API error: ${response.status} - ${errorText}`);
   }
 
-  const result = await response.json();
-  return result.embeddings.map(e => e.values);
+  const result = await safeParseResponseJson(response);
+  if (!result || !result.embeddings || !Array.isArray(result.embeddings)) {
+    throw new Error(`Invalid response format from Gemini Embeddings: ${JSON.stringify(result)}`);
+  }
+  return result.embeddings.map(e => e?.values || []);
 }
 
 /**
@@ -160,7 +271,7 @@ async function embedViaGemini(texts, apiKey, taskType = 'RETRIEVAL_DOCUMENT') {
 export async function embedTexts(texts) {
   if (!texts || texts.length === 0) return [];
 
-  const { apiKey, isOpenRouter, providerDisplayName } = await getEmbeddingConfig();
+  const { apiKey, isOpenRouter, providerDisplayName, provider, settings } = await getEmbeddingConfig();
   const BATCH_SIZE = 100;
   const allEmbeddings = [];
 
@@ -168,7 +279,19 @@ export async function embedTexts(texts) {
     const batch = texts.slice(i, i + BATCH_SIZE);
 
     const embeddings = await withRetry(async () => {
-      if (isOpenRouter) {
+      if (provider === 'ollama') {
+        try {
+          return await embedViaOllama(batch, settings);
+        } catch (ollamaErr) {
+          // Fall back to OpenRouter if Ollama embedding fails and a key is available
+          const fallbackKey = process.env.GEMINI_API_KEY || '';
+          if (fallbackKey.startsWith('sk-or-')) {
+            console.warn(`EmbeddingService: Ollama embedding failed (${ollamaErr.message}). Falling back to OpenRouter.`);
+            return await embedViaOpenRouter(batch, fallbackKey, 'OpenRouter');
+          }
+          throw ollamaErr; // No fallback available, re-throw
+        }
+      } else if (isOpenRouter) {
         return await embedViaOpenRouter(batch, apiKey, providerDisplayName);
       } else {
         return await embedViaGemini(batch, apiKey, 'RETRIEVAL_DOCUMENT');
@@ -209,10 +332,23 @@ export async function embedQuery(query) {
     return cached;
   }
 
-  const { apiKey, isOpenRouter, providerDisplayName } = await getEmbeddingConfig();
+  const { apiKey, isOpenRouter, providerDisplayName, provider, settings } = await getEmbeddingConfig();
 
   const embedding = await withRetry(async () => {
-    if (isOpenRouter) {
+    if (provider === 'ollama') {
+      try {
+        const results = await embedViaOllama([query.trim()], settings);
+        return results[0];
+      } catch (ollamaErr) {
+        const fallbackKey = process.env.GEMINI_API_KEY || '';
+        if (fallbackKey.startsWith('sk-or-')) {
+          console.warn(`EmbeddingService: Ollama query embedding failed (${ollamaErr.message}). Falling back to OpenRouter.`);
+          const results = await embedViaOpenRouter([query.trim()], fallbackKey, 'OpenRouter');
+          return results[0];
+        }
+        throw ollamaErr;
+      }
+    } else if (isOpenRouter) {
       const results = await embedViaOpenRouter([query.trim()], apiKey, providerDisplayName);
       return results[0];
     } else {

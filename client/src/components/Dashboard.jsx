@@ -1,7 +1,7 @@
 import React from 'react';
 import { Users, FileText, Mail, CheckCircle2, XCircle, ArrowUpRight, TrendingUp } from 'lucide-react';
 
-export default function Dashboard({ candidates, jobs, unreadCount, setActiveTab, rankAccordingToJob, emailProvider }) {
+export default function Dashboard({ candidates, jobs, unreadCount, setActiveTab, rankAccordingToJob, emailProvider, currentRole }) {
   // Compute analytics
   const totalCandidates = candidates.length;
   const stageCounts = candidates.reduce((acc, c) => {
@@ -35,6 +35,8 @@ export default function Dashboard({ candidates, jobs, unreadCount, setActiveTab,
     })
     .slice(0, 5);
 
+  const isManager = currentRole === 'Hiring Manager';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
       {/* Welcome Banner */}
@@ -58,17 +60,21 @@ export default function Dashboard({ candidates, jobs, unreadCount, setActiveTab,
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent'
           }}>
-            TalentFlow command center
+            {isManager ? 'Welcome back, Manager' : 'TalentFlow command center'}
           </h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px', maxWidth: '600px', lineHeight: '1.6' }}>
-            Monitor candidate ingestion pipelines, track candidate matching diagnostics, and organize your recruitment workflow in real-time.
+            {isManager 
+              ? 'Review the candidate profiles, scorecard compatibility matches, and tailored technical interview questions assigned to you.' 
+              : 'Monitor candidate ingestion pipelines, track candidate matching diagnostics, and organize your recruitment workflow in real-time.'}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '16px' }}>
-          <button className="btn btn-primary" onClick={() => setActiveTab('inbox')} style={{ boxShadow: '0 4px 20px rgba(99, 102, 241, 0.4)' }}>
-            <Mail size={16} /> Scan Active Sourcing Queue
-          </button>
-        </div>
+        {!isManager && (
+          <div style={{ display: 'flex', gap: '16px' }}>
+            <button className="btn btn-primary" onClick={() => setActiveTab('inbox')} style={{ boxShadow: '0 4px 20px rgba(99, 102, 241, 0.4)' }}>
+              <Mail size={16} /> Scan Active Sourcing Queue
+            </button>
+          </div>
+        )}
       </div>
 
       {/* KPI Cards Grid */}
@@ -83,35 +89,50 @@ export default function Dashboard({ candidates, jobs, unreadCount, setActiveTab,
           </div>
           <h3 style={{ fontSize: '38px', marginBottom: '6px', fontFamily: 'var(--font-display)', fontWeight: '700' }}>{jobs.length}</h3>
           <span style={{ fontSize: '12px', color: 'var(--status-offered)', display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '500' }}>
-            <TrendingUp size={13} /> {jobs.filter(j => j.status === 'Active').length || jobs.length} Active roles accepting resumes
+            <TrendingUp size={13} /> {jobs.filter(j => j.status === 'Active').length || jobs.length} Active roles
           </span>
         </div>
 
         {/* KPI 2 */}
         <div className="glass glass-interactive" style={{ padding: '28px 24px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--accent-secondary)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <span style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Sourced</span>
+            <span style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{isManager ? 'Assigned Profiles' : 'Total Sourced'}</span>
             <span style={{ padding: '8px', background: 'rgba(139, 92, 246, 0.1)', color: 'var(--accent-secondary)', borderRadius: 'var(--radius-sm)' }}>
               <Users size={18} />
             </span>
           </div>
           <h3 style={{ fontSize: '38px', marginBottom: '6px', fontFamily: 'var(--font-display)', fontWeight: '700' }}>{totalCandidates}</h3>
-          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>From local uploads & email pollers</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+            {isManager ? 'Candidates shared for review' : 'From local uploads & email pollers'}
+          </span>
         </div>
 
         {/* KPI 3 */}
-        <div className="glass glass-interactive" style={{ padding: '28px 24px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--status-inbox)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <span style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{emailProvider === 'outlook' ? 'Office 365 Queue' : 'Inbox Queue'}</span>
-            <span style={{ padding: '8px', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--status-inbox)', borderRadius: 'var(--radius-sm)' }}>
-              <Mail size={18} />
+        {isManager ? (
+          <div className="glass glass-interactive" style={{ padding: '28px 24px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--status-inbox)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <span style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>In Interview Stage</span>
+              <span style={{ padding: '8px', background: 'rgba(168, 85, 247, 0.1)', color: 'var(--status-interview)', borderRadius: 'var(--radius-sm)' }}>
+                <CheckCircle2 size={18} />
+              </span>
+            </div>
+            <h3 style={{ fontSize: '38px', marginBottom: '6px', fontFamily: 'var(--font-display)', fontWeight: '700' }}>{interviewCount}</h3>
+            <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Profiles scheduled for interviewing</span>
+          </div>
+        ) : (
+          <div className="glass glass-interactive" style={{ padding: '28px 24px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--status-inbox)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <span style={{ color: 'var(--text-secondary)', fontSize: '13px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{emailProvider === 'outlook' ? 'Office 365 Queue' : 'Inbox Queue'}</span>
+              <span style={{ padding: '8px', background: 'rgba(59, 130, 246, 0.1)', color: 'var(--status-inbox)', borderRadius: 'var(--radius-sm)' }}>
+                <Mail size={18} />
+              </span>
+            </div>
+            <h3 style={{ fontSize: '38px', marginBottom: '6px', fontFamily: 'var(--font-display)', fontWeight: '700' }}>{unreadCount}</h3>
+            <span style={{ fontSize: '12px', color: unreadCount > 0 ? 'var(--status-shortlist)' : 'var(--text-muted)', fontWeight: '500' }}>
+              {unreadCount > 0 ? 'Awaiting AI Extraction' : (emailProvider === 'outlook' ? 'Outlook empty' : 'Gmail empty')}
             </span>
           </div>
-          <h3 style={{ fontSize: '38px', marginBottom: '6px', fontFamily: 'var(--font-display)', fontWeight: '700' }}>{unreadCount}</h3>
-          <span style={{ fontSize: '12px', color: unreadCount > 0 ? 'var(--status-shortlist)' : 'var(--text-muted)', fontWeight: '500' }}>
-            {unreadCount > 0 ? 'Awaiting AI Extraction' : (emailProvider === 'outlook' ? 'Outlook inbox empty' : 'Gmail queue empty')}
-          </span>
-        </div>
+        )}
 
         {/* KPI 4 */}
         <div className="glass glass-interactive" style={{ padding: '28px 24px', borderRadius: 'var(--radius-md)', borderLeft: '3px solid var(--status-offered)' }}>
@@ -122,7 +143,7 @@ export default function Dashboard({ candidates, jobs, unreadCount, setActiveTab,
             </span>
           </div>
           <h3 style={{ fontSize: '38px', marginBottom: '6px', fontFamily: 'var(--font-display)', fontWeight: '700' }}>{avgScore}%</h3>
-          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Parsed diagnostics check</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Parsed compatibility check</span>
         </div>
       </div>
 

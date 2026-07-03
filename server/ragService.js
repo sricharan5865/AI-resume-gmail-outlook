@@ -11,6 +11,9 @@ let vectorIndex = [];
 /** @type {Date|null} Timestamp of the last completed indexing operation */
 let lastIndexedAt = null;
 
+/** @type {string|null} Error message from the last failed reindex attempt */
+let lastReindexError = null;
+
 /**
  * Delays execution for the given number of milliseconds.
  * @param {number} ms
@@ -256,6 +259,7 @@ export async function indexAllCandidates(progressCallback) {
   }
 
   lastIndexedAt = new Date();
+  lastReindexError = errors > 0 ? `${errors} candidate(s) failed to index. Check server logs.` : null;
   console.log(`RAG: Indexing complete. ${indexed}/${total} candidates indexed, ${errors} errors.`);
   return { indexed, total, errors };
 }
@@ -436,6 +440,7 @@ export async function getRAGStatus() {
     initialized: vectorIndex.length > 0,
     totalChunks: vectorIndex.length,
     totalCandidates: uniqueCandidateIds.size,
-    lastIndexedAt
+    lastIndexedAt,
+    lastReindexError
   };
 }

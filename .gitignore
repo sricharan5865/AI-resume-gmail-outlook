@@ -5,17 +5,20 @@ node_modules/
 client/dist/
 dist/
 
-# Local env files
+# Local env files (DO NOT commit - contains secrets)
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+# .env.example files ARE committed (they are safe templates with no secrets)
 
 # Databases and user data
 server/uploads/*
 !server/uploads/.gitkeep
 uploads/
+server/db.json
+server/tokens.json
 
 # Python cache
 __pycache__/

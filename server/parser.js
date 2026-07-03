@@ -1,4 +1,5 @@
 import pdf from 'pdf-parse';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.js';
 import mammoth from 'mammoth';
 import { spawn } from 'child_process';
 import path from 'path';
@@ -57,15 +58,8 @@ export async function extractTextFromFile(filePath, originalName, mimeType) {
 
   // 4. PDF (use existing extractTextFromPDF logic but reading from filePath)
   if (ext === '.pdf') {
-    try {
-      const buffer = fs.readFileSync(filePath);
-      const text = await extractTextFromPDF(buffer);
-      if (text && text.trim().length > 0) {
-        return text;
-      }
-    } catch (err) {
-      console.warn(`Failed to parse as PDF: ${originalName || filePath}`, err.message);
-    }
+    const buffer = fs.readFileSync(filePath);
+    return await extractTextFromPDF(buffer);
   }
 
   // 5. Fallback: try reading as plain UTF-8 text anyway
@@ -98,16 +92,28 @@ export async function extractTextFromPDF(buffer) {
     const data = await pdf(buffer);
     text = data.text || '';
   } catch (error) {
-    console.warn('pdf-parse failed, falling back to OCR...', error.message);
+    console.warn('pdf-parse failed, trying pdfjs-dist...', error.message);
   }
 
   if (!text || text.trim().length === 0) {
-    console.log('No text extracted, attempting Python OCR fallback...');
-    text = await runPythonOCR(buffer);
+    try {
+      const data = new Uint8Array(buffer);
+      const doc = await pdfjsLib.getDocument({ data }).promise;
+      let extractedText = '';
+      for (let i = 1; i <= doc.numPages; i++) {
+        const page = await doc.getPage(i);
+        const content = await page.getTextContent();
+        const strings = content.items.map(item => item.str);
+        extractedText += strings.join(' ') + '\n';
+      }
+      text = extractedText;
+    } catch (error) {
+      console.warn('pdfjs-dist failed as well:', error.message);
+    }
   }
-  
+
   if (!text || text.trim().length === 0) {
-      throw new Error('Failed to parse PDF file contents or run OCR.');
+    throw new Error('Failed to parse PDF file contents: PDF contains no text (OCR fallback disabled for PDF).');
   }
   return text;
 }
