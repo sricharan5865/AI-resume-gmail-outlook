@@ -697,8 +697,8 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
       stream: false,
       options: {
         temperature: 0.1,
-        num_ctx: 8192,
-        num_predict: 4096
+        num_ctx: 4096, // Reduced from 8192 to prevent CPU offloading and keep it running fast in VRAM
+        num_predict: 2048
       }
     };
 
