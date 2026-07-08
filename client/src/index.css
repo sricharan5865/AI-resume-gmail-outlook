@@ -521,10 +521,11 @@ h1, h2, h3, h4 {
 .rag-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  min-height: 100%;
+  position: relative;
   max-width: 1000px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 24px 24px 80px 24px;
   gap: 20px;
   box-sizing: border-box;
 }

@@ -48,6 +48,17 @@ const getQuestionStyles = (importance) => {
         indicatorColor: '#eab308',
         shadow: 'none'
       };
+    case 'SCREENING':
+      return {
+        badgeText: '🔵 SCREENING',
+        badgeBg: 'rgba(59, 130, 246, 0.15)',
+        badgeColor: '#93c5fd',
+        badgeBorder: '1px solid rgba(59, 130, 246, 0.25)',
+        cardBg: 'linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(59, 130, 246, 0.01) 100%)',
+        cardBorder: '1px solid rgba(59, 130, 246, 0.35)',
+        indicatorColor: '#3b82f6',
+        shadow: '0 0 12px rgba(59, 130, 246, 0.05)'
+      };
     case 'OPTIONAL':
     default:
       return {
@@ -64,11 +75,52 @@ const getQuestionStyles = (importance) => {
 };
 
 export default function CandidateDetails({ candidate: propCandidate, job, onClose, onOpenEmailModal, onStageChanged, onCandidateDeleted, backendUrl, rankAccordingToJob, currentRole, token }) {
-  const [candidate, setCandidate] = useState(propCandidate);
+  const [candidate, setCandidate] = useState(() => {
+    const cid = propCandidate?.id || propCandidate?.candidateId;
+    return propCandidate ? { ...propCandidate, id: cid } : null;
+  });
+  const [loadingDetails, setLoadingDetails] = useState(false);
 
   useEffect(() => {
-    setCandidate(propCandidate);
-  }, [propCandidate]);
+    if (!propCandidate) return;
+    const cid = propCandidate.id || propCandidate.candidateId;
+    const isSparse = !propCandidate.experience || propCandidate.experience.length === 0 || !propCandidate.resumeText;
+    
+    if (cid && isSparse) {
+      setLoadingDetails(true);
+      fetch(`${backendUrl}/api/candidates/${cid}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+        .then(res => {
+          if (res.ok) return res.json();
+          throw new Error('Failed to fetch full candidate profile');
+        })
+        .then(data => {
+          setCandidate({
+            ...data,
+            jdQuestions: propCandidate.jdQuestions || data.jdQuestions,
+            jdTitle: propCandidate.jdTitle || data.jdTitle,
+            jdRequirements: propCandidate.jdRequirements || data.jdRequirements,
+            jdDescription: propCandidate.jdDescription || data.jdDescription,
+            matchScore: propCandidate.matchScore !== undefined ? propCandidate.matchScore : data.matchScore,
+            matchExplanation: propCandidate.matchExplanation || data.matchExplanation,
+            matchingSkills: propCandidate.matchingSkills || data.matchingSkills,
+            missingSkills: propCandidate.missingSkills || data.missingSkills
+          });
+        })
+        .catch(err => {
+          console.error('Error fetching full candidate profile:', err);
+          setCandidate({ ...propCandidate, id: cid });
+        })
+        .finally(() => {
+          setLoadingDetails(false);
+        });
+    } else {
+      setCandidate({ ...propCandidate, id: cid });
+    }
+  }, [propCandidate, backendUrl, token]);
 
   if (!candidate) return null;
 
@@ -77,6 +129,7 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
   const [qaSubTab, setQaSubTab] = useState(candidate.hrQuestions && candidate.hrQuestions.length > 0 ? 'hr' : 'tech');
   const [managers, setManagers] = useState([]);
   const [assignedManager, setAssignedManager] = useState(candidate.assignedTo || '');
+  const [loadingJdQuestions, setLoadingJdQuestions] = useState(false);
   const reScoreLockRef = useRef(null);
 
   useEffect(() => {
@@ -88,6 +141,10 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
   // Auto re-score on details open if details are empty
   useEffect(() => {
     if (reScoreLockRef.current === candidate.id) return;
+    
+    // Only re-score if we have loaded a non-sparse candidate profile
+    const isSparse = !candidate.experience || candidate.experience.length === 0 || !candidate.resumeText;
+    if (isSparse) return;
 
     const checkAndReScore = async () => {
       const hasNoScore = !candidate.ownCategoryExplanation || candidate.ownCategoryExplanation.trim().length === 0;
@@ -103,7 +160,15 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
           });
           if (res.ok) {
             const updatedCandidate = await res.json();
-            setCandidate(updatedCandidate);
+            setCandidate(prev => ({
+              ...updatedCandidate,
+              jdQuestions: prev.jdQuestions,
+              jdTitle: prev.jdTitle,
+              matchScore: prev.matchScore,
+              matchExplanation: prev.matchExplanation,
+              matchingSkills: prev.matchingSkills,
+              missingSkills: prev.missingSkills
+            }));
             // Propagate stage or metadata changes if needed
             if (onStageChanged) {
               onStageChanged(updatedCandidate.id, updatedCandidate.stage);
@@ -115,7 +180,7 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
       }
     };
     checkAndReScore();
-  }, [candidate.id]);
+  }, [candidate.id, candidate.experience, candidate.resumeText]);
 
   useEffect(() => {
     if (currentRole !== 'Hiring Manager') {
@@ -134,6 +199,41 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
       }
     } catch (e) {
       console.error('Failed to fetch managers:', e);
+    }
+  };
+
+  const handleGenerateJdQuestions = async () => {
+    const activeJdTitle = job?.title || candidate.jdTitle || 'Role';
+    const activeJdRequirements = job?.requirements || candidate.jdRequirements || '';
+    const activeJdDescription = job?.description || candidate.jdDescription || '';
+    
+    setLoadingJdQuestions(true);
+    try {
+      const res = await fetch(`${backendUrl}/api/candidates/${candidate.id}/generate-jd-questions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          jdTitle: activeJdTitle,
+          jdRequirements: activeJdRequirements,
+          jdDescription: activeJdDescription
+        })
+      });
+      if (res.ok) {
+        const questionsResult = await res.json();
+        setCandidate(prev => ({
+          ...prev,
+          jdQuestions: questionsResult
+        }));
+      } else {
+        console.error('Failed to generate JD questions:', res.statusText);
+      }
+    } catch (err) {
+      console.error('Failed to generate JD questions:', err);
+    } finally {
+      setLoadingJdQuestions(false);
     }
   };
 
@@ -156,17 +256,33 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
     }
   };
 
-  // Helper to parse date strings (e.g. "Sep 2024", "Present")
   const parseDateString = (str) => {
     if (!str) return null;
     const clean = str.trim().toLowerCase();
-    if (clean.includes('present') || clean.includes('current') || clean.includes('now')) {
+    if (
+      clean.includes('present') || 
+      clean.includes('current') || 
+      clean.includes('now') || 
+      clean.includes('date') || 
+      clean.includes('ongoing') || 
+      clean.includes('today')
+    ) {
       return new Date();
     }
-    const yearMatch = clean.match(/\b(19|20)\d{2}\b/);
-    if (!yearMatch) return null;
-    const year = parseInt(yearMatch[0], 10);
 
+    // 1. Try matching numeric format like MM/YY, MM/YYYY, MM.YY, etc.
+    const numericDateMatch = clean.match(/\b(0?[1-9]|1[0-2])[-.\/\s']+(\d{2,4})\b/);
+    if (numericDateMatch) {
+      const month = parseInt(numericDateMatch[1], 10) - 1;
+      const yearText = numericDateMatch[2];
+      let year = parseInt(yearText, 10);
+      if (yearText.length === 2) {
+        year = year < 50 ? 2000 + year : 1900 + year;
+      }
+      return new Date(year, month, 1);
+    }
+
+    // 2. Try matching month names and years
     const monthMap = {
       jan: 0, january: 0,
       feb: 1, february: 1,
@@ -189,11 +305,22 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
         break;
       }
     }
-    const slashMatch = clean.match(/\b(0?[1-9]|1[0-2])\/(19|20)\d{2}\b/);
-    if (slashMatch) {
-      month = parseInt(slashMatch[1], 10) - 1;
+
+    // Look for 4-digit year
+    const yearMatch = clean.match(/\b(19|20)\d{2}\b/);
+    if (yearMatch) {
+      return new Date(parseInt(yearMatch[0], 10), month, 1);
     }
-    return new Date(year, month, 1);
+
+    // Look for 2-digit year (preceded by space, quote, or boundary)
+    const twoDigitYearMatch = clean.match(/(?:\s+|'|\b)(\d{2})\b/);
+    if (twoDigitYearMatch) {
+      let year = parseInt(twoDigitYearMatch[1], 10);
+      year = year < 50 ? 2000 + year : 1900 + year;
+      return new Date(year, month, 1);
+    }
+
+    return null;
   };
 
   // Parse experience ranges
@@ -201,7 +328,7 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
   const parsedJobs = experiences
     .map(exp => {
       const duration = exp.duration || '';
-      const parts = duration.split(/[-–—to]+/);
+      const parts = duration.split(/\s*(?:-|-|–|—|to)\s*/i);
       if (parts.length === 0) return null;
       const start = parseDateString(parts[0]);
       const end = parts.length > 1 ? parseDateString(parts[1]) : start;
@@ -272,7 +399,7 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
   // Dynamically select parameters based on active ranking mode
   // If the candidate is not assigned to a specific job (General Role), always show their profile competency analysis.
   const isGeneralRole = !candidate.jobId || !job;
-  const useJobMatch = rankAccordingToJob && !isGeneralRole;
+  const useJobMatch = (rankAccordingToJob && !isGeneralRole) || !!candidate.jdQuestions;
 
   const score = useJobMatch 
     ? candidate.matchScore 
@@ -303,6 +430,9 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
   const handleStageSelect = async (e) => {
     const newStage = e.target.value;
     const oldStage = candidate.stage;
+    if (oldStage && oldStage.toLowerCase() === newStage.toLowerCase()) {
+      return;
+    }
     try {
       onStageChanged(candidate.id, newStage);
       const res = await fetch(`${backendUrl}/api/candidates/${candidate.id}/stage`, {
@@ -687,10 +817,91 @@ export default function CandidateDetails({ candidate: propCandidate, job, onClos
                     )}
                   </div>
                 </div>
+
+                {/* Candidate Skills (All) */}
+                <div style={{ gridColumn: 'span 2', marginTop: '12px', paddingTop: '12px', borderTop: '1px dashed var(--glass-border)' }}>
+                  <h4 style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    <CheckCircle2 size={12} /> Candidate Skills (All)
+                  </h4>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {candidate.skills && candidate.skills.length > 0 ? (
+                      candidate.skills.map((s, i) => {
+                        const isMatch = matchingSkills?.some(ms => ms.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(ms.toLowerCase()));
+                        return (
+                          <span key={i} style={{ 
+                            fontSize: '11px', 
+                            background: isMatch ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255, 255, 255, 0.03)', 
+                            color: isMatch ? '#34d399' : 'var(--text-secondary)', 
+                            padding: '3px 8px', 
+                            borderRadius: '4px', 
+                            border: isMatch ? '1px solid rgba(16, 185, 129, 0.2)' : '1px solid var(--glass-border)' 
+                          }}>
+                            {s}
+                          </span>
+                        );
+                      })
+                    ) : (
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>None identified</span>
+                    )}
+                  </div>
+                </div>
               </div>
 
             </div>
           </div>
+
+          {/* JD-Specific Interview Questions (from JD Match) */}
+          {(job || candidate.jdRequirements) && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <h3 style={{ fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: '#818cf8' }}>
+                📋 JD-Relevant Questions {(job?.title || candidate.jdTitle) ? `— ${job?.title || candidate.jdTitle}` : ''}
+              </h3>
+
+              {candidate.jdQuestions ? (
+                <>
+                  {/* HR Questions for JD */}
+                  {candidate.jdQuestions.hrQuestions && candidate.jdQuestions.hrQuestions.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <h4 style={{ fontSize: '13px', fontWeight: '700', color: '#a78bfa', margin: 0 }}>HR & Screening Questions</h4>
+                      {candidate.jdQuestions.hrQuestions.map((q, qi) => (
+                        <div key={qi} style={{ fontSize: '13px', padding: '10px 14px', borderRadius: 'var(--radius-md)', background: 'rgba(99, 102, 241, 0.04)', border: '1px solid rgba(99, 102, 241, 0.12)' }}>
+                          <p style={{ margin: '0 0 6px 0', fontWeight: '600', color: 'var(--text-primary)' }}>Q{qi+1}: {q.question}</p>
+                          <p style={{ margin: 0, color: 'var(--text-secondary)', fontStyle: 'italic', fontSize: '12px' }}>Expected: {q.answer}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Technical Questions for JD */}
+                  {candidate.jdQuestions.technicalQuestions && candidate.jdQuestions.technicalQuestions.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <h4 style={{ fontSize: '13px', fontWeight: '700', color: '#34d399', margin: 0 }}>Technical & Domain Questions</h4>
+                      {candidate.jdQuestions.technicalQuestions.map((q, qi) => (
+                        <div key={qi} style={{ fontSize: '13px', padding: '10px 14px', borderRadius: 'var(--radius-md)', background: 'rgba(52, 211, 153, 0.04)', border: '1px solid rgba(52, 211, 153, 0.12)' }}>
+                          <p style={{ margin: '0 0 6px 0', fontWeight: '600', color: 'var(--text-primary)' }}>Q{qi+1}: {q.question}</p>
+                          <p style={{ margin: 0, color: 'var(--text-secondary)', fontStyle: 'italic', fontSize: '12px' }}>Expected: {q.answer}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="glass" style={{ padding: '20px', borderRadius: 'var(--radius-md)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', background: 'rgba(129, 140, 248, 0.02)', border: '1px dashed rgba(129, 140, 248, 0.2)' }}>
+                  <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
+                    JD-specific interview questions have not been generated for this candidate yet.
+                  </p>
+                  <button 
+                    className="btn btn-primary"
+                    style={{ padding: '8px 16px', fontSize: '12px', background: 'var(--accent-primary)', border: '1px solid rgba(99, 102, 241, 0.2)' }}
+                    onClick={handleGenerateJdQuestions}
+                    disabled={loadingJdQuestions}
+                  >
+                    {loadingJdQuestions ? 'Generating Questions...' : 'Generate JD-Relevant Questions'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* HR & Technical Interview Questions */}
           {((candidate.hrQuestions && candidate.hrQuestions.length > 0) || 

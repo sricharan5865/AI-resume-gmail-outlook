@@ -25,8 +25,41 @@ export default function PipelineBoard({
   const [activeDragStage, setActiveDragStage] = useState(null);
   const [duplicatesQueue, setDuplicatesQueue] = useState([]);
   const [filterDateRange, setFilterDateRange] = useState('');
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportStages, setExportStages] = useState({
+    Inbox: true,
+    Shortlist: true,
+    Interview: true,
+    Offered: true,
+    Rejected: true
+  });
 
+  const allSelected = Object.values(exportStages).every(val => val);
+  const handleAllToggle = () => {
+    const nextValue = !allSelected;
+    setExportStages({
+      Inbox: nextValue,
+      Shortlist: nextValue,
+      Interview: nextValue,
+      Offered: nextValue,
+      Rejected: nextValue
+    });
+  };
+  const handleStageToggle = (stage) => {
+    setExportStages(prev => ({
+      ...prev,
+      [stage]: !prev[stage]
+    }));
+  };
   const handleExport = () => {
+    setShowExportModal(true);
+  };
+  const confirmExport = () => {
+    const selectedStagesList = Object.keys(exportStages).filter(stage => exportStages[stage]);
+    if (selectedStagesList.length === 0) {
+      alert("Please select at least one stage to export.");
+      return;
+    }
     const headers = {
       name: 'Name',
       email: 'Email',
@@ -41,19 +74,23 @@ export default function PipelineBoard({
       education: 'Education',
       createdAt: 'Import Date'
     };
-    
-    const dataToExport = sortedCandidates.map(c => {
+    const candidatesToExport = sortedCandidates.filter(c => 
+      selectedStagesList.some(s => s.toLowerCase() === c.stage.toLowerCase())
+    );
+    const dataToExport = candidatesToExport.map(c => {
       const job = jobs.find(j => j.id === c.jobId);
       return {
         ...c,
         jobId: job ? job.title : 'General Role'
       };
     });
-    
     const job = jobs.find(j => j.id === selectedFilterJobId);
-    const fileName = job ? `candidates_${job.title.replace(/\s+/g, '_').toLowerCase()}` : 'all_candidates_pipeline';
-    
+    let fileName = job ? `candidates_${job.title.replace(/\s+/g, '_').toLowerCase()}` : 'all_candidates_pipeline';
+    if (!allSelected) {
+      fileName += `_${selectedStagesList.map(s => s.toLowerCase()).join('_')}`;
+    }
     exportToCSV(dataToExport, fileName, headers);
+    setShowExportModal(false);
   };
 
   // Sorting state
@@ -137,6 +174,11 @@ export default function PipelineBoard({
 
     const candidate = candidates.find(c => c.id === candidateId);
     const oldStage = candidate ? candidate.stage : null;
+
+    if (oldStage && oldStage.toLowerCase() === stage.toLowerCase()) {
+      setDraggedCandidateId(null);
+      return;
+    }
 
     try {
       // Optimistic state update in parent
@@ -302,8 +344,12 @@ export default function PipelineBoard({
       });
 
       if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || 'Failed to resolve duplicate');
+        let errMsg = 'Failed to resolve duplicate';
+        try {
+          const errData = await res.json();
+          errMsg = errData.error || errMsg;
+        } catch (jsonErr) {}
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
@@ -846,6 +892,82 @@ export default function PipelineBoard({
                   onClick={() => handleResolveDuplicate('cancel')}
                 >
                   Cancel (Discard Uploaded File)
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Export Stage Selection Modal Overlay */}
+      {showExportModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.75)', zIndex: 110, backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+          <div className="glass" style={{ width: '100%', maxWidth: '400px', borderRadius: 'var(--radius-lg)', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
+            
+            {/* Header */}
+            <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--glass-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary-color, #6366f1)' }}>
+                <FileSpreadsheet size={18} /> Export Pipeline Data
+              </h3>
+              <button className="btn btn-secondary" style={{ padding: '8px' }} onClick={() => setShowExportModal(false)}>
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <p style={{ fontSize: '14px', color: 'var(--text-primary)' }}>
+                Select candidate stages to include in the export:
+              </p>
+
+              {/* Select All Toggle */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '8px', borderBottom: '1px solid var(--glass-border)' }}>
+                <input 
+                  type="checkbox" 
+                  id="export-select-all" 
+                  checked={allSelected} 
+                  onChange={handleAllToggle} 
+                  style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+                <label htmlFor="export-select-all" style={{ fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', color: 'var(--text-primary)' }}>
+                  {allSelected ? 'Deselect All' : 'Select All'}
+                </label>
+              </div>
+
+              {/* Stage Toggles */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {Object.keys(exportStages).map(stage => (
+                  <div key={stage} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input 
+                      type="checkbox" 
+                      id={`export-stage-${stage}`} 
+                      checked={exportStages[stage]} 
+                      onChange={() => handleStageToggle(stage)} 
+                      style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                    />
+                    <label htmlFor={`export-stage-${stage}`} style={{ fontSize: '14px', cursor: 'pointer', color: 'var(--text-primary)' }}>
+                      {stage}
+                    </label>
+                  </div>
+                ))}
+              </div>
+
+              {/* Footer Actions */}
+              <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+                <button 
+                  className="btn btn-primary" 
+                  style={{ flex: 1, justifyContent: 'center', padding: '10px', fontWeight: '600' }} 
+                  onClick={confirmExport}
+                >
+                  Export
+                </button>
+                <button 
+                  className="btn btn-secondary" 
+                  style={{ flex: 1, justifyContent: 'center', padding: '10px', fontWeight: '600' }} 
+                  onClick={() => setShowExportModal(false)}
+                >
+                  Cancel
                 </button>
               </div>
             </div>

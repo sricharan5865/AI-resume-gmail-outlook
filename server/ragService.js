@@ -23,6 +23,20 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function keywordSimilarity(query, text) {
+  const queryWords = query.toLowerCase().match(/\b\w+\b/g) || [];
+  const textWords = new Set(text.toLowerCase().match(/\b\w+\b/g) || []);
+  if (queryWords.length === 0) return 0;
+  
+  let matches = 0;
+  for (const word of queryWords) {
+    if (textWords.has(word)) {
+      matches++;
+    }
+  }
+  return matches / queryWords.length;
+}
+
 /**
  * Loads all ResumeChunks from MongoDB into the in-memory vector index.
  * Called on server startup to hydrate the search index.
@@ -134,6 +148,26 @@ export function chunkCandidate(candidate) {
       section: 'summary',
       text: `Candidate: ${name} | Resume Summary: ${candidate.resumeText.substring(0, 2000)}`,
       metadata: { name, seniority: candidate.seniorityLevel || 'Mid' }
+    });
+  }
+
+  // Projects chunks (one per entry)
+  if (candidate.projects && candidate.projects.length > 0) {
+    candidate.projects.forEach((proj, idx) => {
+      if (!proj.name && !proj.description) return;
+      const parts = [];
+      if (proj.name) parts.push(proj.name);
+      if (proj.description) parts.push(`- ${proj.description}`);
+      if (proj.matchingSkills && proj.matchingSkills.length > 0) {
+        parts.push(`(Skills: ${proj.matchingSkills.join(', ')})`);
+      }
+
+      chunks.push({
+        chunkId: `${id}::projects::${idx}`,
+        section: 'projects',
+        text: `Candidate: ${name} | Project: ${parts.join(' ')}`,
+        metadata: { name, seniority: candidate.seniorityLevel || 'Mid' }
+      });
     });
   }
 
@@ -281,13 +315,28 @@ export async function searchResumes(query, topK = 10, jobId = null) {
   }
 
   // Embed the query
-  const queryEmbedding = await embedQuery(query);
+  let queryEmbedding;
+  let useFallback = false;
+  try {
+    queryEmbedding = await embedQuery(query);
+  } catch (err) {
+    console.error('Embedding service failed. Falling back to keyword search:', err.message);
+    useFallback = true;
+  }
 
-  // Compute cosine similarity against all vectors
-  let scoredChunks = vectorIndex.map(entry => ({
-    ...entry,
-    score: cosineSimilarity(queryEmbedding, entry.embedding)
-  }));
+  // Compute similarity against all vectors
+  let scoredChunks;
+  if (useFallback) {
+    scoredChunks = vectorIndex.map(entry => ({
+      ...entry,
+      score: keywordSimilarity(query, entry.text || '')
+    }));
+  } else {
+    scoredChunks = vectorIndex.map(entry => ({
+      ...entry,
+      score: cosineSimilarity(queryEmbedding, entry.embedding)
+    }));
+  }
 
   // Filter by jobId if provided
   if (jobId) {

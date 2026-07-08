@@ -244,7 +244,7 @@ export default function Inbox({ token, jobs, onCandidateImported, backendUrl, em
                 {error}
               </p>
               <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                Ensure your backend server is running on <strong>http://localhost:5000</strong>.
+                Ensure your backend server is running and accessible.
               </p>
               <button className="btn btn-secondary" style={{ width: '100%', marginTop: '16px' }} onClick={checkAuthStatus}>
                 <RefreshCw size={14} /> Retry Connection

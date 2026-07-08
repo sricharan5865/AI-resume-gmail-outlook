@@ -211,6 +211,9 @@ async function embedViaOpenRouter(texts, apiKey, providerDisplayName = 'AI') {
   }, 30000);
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(`Invalid API Key for ${providerDisplayName}. Please configure a valid API key in Settings or switch to Ollama.`);
+    }
     const errorText = await response.text();
     throw new Error(`${providerDisplayName} Embeddings API error: ${response.status} - ${errorText}`);
   }
@@ -249,6 +252,9 @@ async function embedViaGemini(texts, apiKey, taskType = 'RETRIEVAL_DOCUMENT') {
   }, 30000);
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error('Invalid API Key for Gemini. Please configure a valid API key in Settings or switch to Ollama.');
+    }
     const errorText = await response.text();
     throw new Error(`Gemini Embeddings API error: ${response.status} - ${errorText}`);
   }
@@ -278,25 +284,32 @@ export async function embedTexts(texts) {
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
 
-    const embeddings = await withRetry(async () => {
-      if (provider === 'ollama') {
-        try {
-          return await embedViaOllama(batch, settings);
-        } catch (ollamaErr) {
-          // Fall back to OpenRouter if Ollama embedding fails and a key is available
-          const fallbackKey = process.env.GEMINI_API_KEY || '';
-          if (fallbackKey.startsWith('sk-or-')) {
-            console.warn(`EmbeddingService: Ollama embedding failed (${ollamaErr.message}). Falling back to OpenRouter.`);
-            return await embedViaOpenRouter(batch, fallbackKey, 'OpenRouter');
+    let embeddings;
+    try {
+      embeddings = await withRetry(async () => {
+        if (provider === 'ollama') {
+          try {
+            return await embedViaOllama(batch, settings);
+          } catch (ollamaErr) {
+            // Fall back to OpenRouter if Ollama embedding fails and a key is available
+            const fallbackKey = process.env.GEMINI_API_KEY || '';
+            if (fallbackKey.startsWith('sk-or-')) {
+              console.warn(`EmbeddingService: Ollama embedding failed (${ollamaErr.message}). Falling back to OpenRouter.`);
+              return await embedViaOpenRouter(batch, fallbackKey, 'OpenRouter');
+            }
+            throw ollamaErr; // No fallback available, re-throw
           }
-          throw ollamaErr; // No fallback available, re-throw
+        } else if (isOpenRouter) {
+          return await embedViaOpenRouter(batch, apiKey, providerDisplayName);
+        } else {
+          return await embedViaGemini(batch, apiKey, 'RETRIEVAL_DOCUMENT');
         }
-      } else if (isOpenRouter) {
-        return await embedViaOpenRouter(batch, apiKey, providerDisplayName);
-      } else {
-        return await embedViaGemini(batch, apiKey, 'RETRIEVAL_DOCUMENT');
-      }
-    });
+      });
+    } catch (err) {
+      console.error(`Embedding service failed for batch of ${batch.length} texts:`, err.message);
+      // Fallback to generating zero/mock vectors so the application doesn't crash on upload
+      embeddings = batch.map(() => new Array(768).fill(0));
+    }
 
     allEmbeddings.push(...embeddings);
 

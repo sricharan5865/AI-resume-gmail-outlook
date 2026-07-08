@@ -1,0 +1,12 @@
+diff --git a/server/server.js b/server/server.js
+--- a/server/server.js
++++ b/server/server.js
+@@ -1795,2 +1795,5 @@
+     const candidate = await Candidate.findOne({ id: req.params.id });
+     if (!candidate) return res.status(404).json({ error: 'Not found.' });
+ 
+     const oldStage = candidate.stage;
++    if (oldStage === stage) {
++      return res.json(candidate);
++    }
+     candidate.stage = stage;

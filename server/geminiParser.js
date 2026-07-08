@@ -367,6 +367,56 @@ function getCompactSchemaInstructions(schema) {
 }
 
 /**
+ * Helper to fetch OpenRouter completions with automatic self-healing retry on credit/token limits.
+ */
+async function fetchOpenRouterWithRetry(url, requestBody, apiKey) {
+  let response = await fetchWithTimeout(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(requestBody)
+  }, 300000);
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    let shouldRetryWithLowerTokens = false;
+    let affordableTokens = 4000;
+
+    if (response.status === 402 || errorText.includes('credits') || errorText.includes('max_tokens')) {
+      shouldRetryWithLowerTokens = true;
+      const match = errorText.match(/can only afford (\d+)/i);
+      if (match && match[1]) {
+        affordableTokens = Math.max(1000, parseInt(match[1], 10) - 200);
+      } else {
+        affordableTokens = 4000;
+      }
+    }
+
+    if (shouldRetryWithLowerTokens && requestBody.max_tokens > 1000) {
+      console.warn(`OpenRouter token limit hit. Retrying with affordable tokens: ${affordableTokens}`);
+      requestBody.max_tokens = affordableTokens;
+      response = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      }, 300000);
+    }
+
+    if (!response.ok) {
+      const finalErrorText = shouldRetryWithLowerTokens ? errorText : await response.text();
+      throw new Error(`OpenRouter API error: ${response.status} - ${finalErrorText}`);
+    }
+  }
+
+  return response;
+}
+
+/**
  * Helper to call the configured AI Provider via direct HTTP POST.
  */
 async function callAIProvider(prompt, systemInstruction = '', schema = null, pdfBase64 = null) {
@@ -390,7 +440,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
     if (isOpenRouter) {
       const url = 'https://openrouter.ai/api/v1/chat/completions';
       const requestBody = {
-        model: process.env.AI_MODEL || 'google/gemini-2.5-flash',
+        model: process.env.AI_MODEL || 'google/gemini-3.1-pro-preview',
         max_tokens: 8192,
         messages: [
           ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
@@ -406,20 +456,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
         });
       }
 
-      const response = await fetchWithTimeout(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      }, 300000);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Gemini AI API error: ${response.status} - ${errorText}`);
-      }
-
+      const response = await fetchOpenRouterWithRetry(url, requestBody, apiKey);
       const result = await response.json();
       const text = result.choices?.[0]?.message?.content;
       if (!text) {
@@ -511,18 +548,23 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
       }
     }
 
-    const response = await fetchWithTimeout(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(requestBody)
-    }, 300000);
+    let response;
+    if (isOpenRouter) {
+      response = await fetchOpenRouterWithRetry(url, requestBody, apiKey);
+    } else {
+      response = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody)
+      }, 300000);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+      }
     }
 
     const result = await response.json();
@@ -565,19 +607,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
         });
       }
 
-      response = await fetchWithTimeout(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(requestBody)
-      }, 300000);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Claude API error: ${response.status} - ${errorText}`);
-      }
+      response = await fetchOpenRouterWithRetry(url, requestBody, apiKey);
 
       const result = await response.json();
       const text = result.choices?.[0]?.message?.content;
@@ -648,8 +678,16 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
       userContent += getCompactSchemaInstructions(schema);
     }
 
+    // Disable thinking for reasoning/DeepSeek-style models to prevent token truncation and save speed
+    userContent += "\n\nCRITICAL: Do NOT write any thinking process, reasoning, chain-of-thought, or <thinking> tags. Skip thinking entirely and go straight to outputting the raw JSON. You must respond with valid JSON only.";
+
+    let finalSystem = systemInstruction;
+    if (finalSystem) {
+      finalSystem += "\nCRITICAL: Do NOT output any thinking, reasoning, thoughts, or <thinking> tags. Skip thinking entirely. Directly output the raw JSON object.";
+    }
+
     const messages = [
-      ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),
+      ...(finalSystem ? [{ role: 'system', content: finalSystem }] : []),
       { role: 'user', content: userContent }
     ];
 
@@ -660,7 +698,7 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
       options: {
         temperature: 0.1,
         num_ctx: 8192,
-        num_predict: 2048
+        num_predict: 4096
       }
     };
 
@@ -754,15 +792,15 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
   }
 }
 
-function mapAnalysisToQuestions(parsedData) {
-  let hrQuestions = [];
+function mapAnalysisToQuestions(parsedData, isJdMatch = false) {
+  let personalizedHrQuestions = [];
   let technicalQuestions = [];
 
   // 1. Map Career Gaps to HR
   if (parsedData.career_gaps && Array.isArray(parsedData.career_gaps)) {
     parsedData.career_gaps.forEach(gap => {
       if (gap.interview_question && gap.sample_answer) {
-        hrQuestions.push({
+        personalizedHrQuestions.push({
           question: gap.interview_question,
           answer: gap.sample_answer,
           importance: 'MUST ASK'
@@ -775,7 +813,7 @@ function mapAnalysisToQuestions(parsedData) {
   if (parsedData.hr_questions && Array.isArray(parsedData.hr_questions)) {
     parsedData.hr_questions.forEach(q => {
       if (q.question && q.sample_answer) {
-        hrQuestions.push({
+        personalizedHrQuestions.push({
           question: q.question,
           answer: q.sample_answer,
           importance: 'GOOD TO ASK'
@@ -828,9 +866,11 @@ function mapAnalysisToQuestions(parsedData) {
   }
 
   // Slice or fill to exactly 7 HR questions
-  if (hrQuestions.length > 7) {
-    hrQuestions = hrQuestions.slice(0, 7);
+  let slicedPersonalized = [];
+  if (personalizedHrQuestions.length > 7) {
+    slicedPersonalized = personalizedHrQuestions.slice(0, 7);
   } else {
+    slicedPersonalized = [...personalizedHrQuestions];
     const defaultHr = [
       { question: "Tell me about your background and how it prepares you for this role?", answer: "I have a solid foundation in my field, have successfully delivered key projects in my previous roles, and quickly adapt to new stacks.", importance: "OPTIONAL" },
       { question: "Why are you interested in joining our company?", answer: "I admire your company's innovation, culture, and project scale, and believe my skills align perfectly with your team's goals.", importance: "OPTIONAL" },
@@ -841,9 +881,9 @@ function mapAnalysisToQuestions(parsedData) {
       { question: "Do you have any questions for us?", answer: "What are the biggest challenges the team is currently facing, and what does success look like in this role?", importance: "OPTIONAL" }
     ];
     let idx = 0;
-    while (hrQuestions.length < 7 && idx < defaultHr.length) {
-      if (!hrQuestions.some(q => q.question === defaultHr[idx].question)) {
-        hrQuestions.push(defaultHr[idx]);
+    while (slicedPersonalized.length < 7 && idx < defaultHr.length) {
+      if (!slicedPersonalized.some(q => q.question === defaultHr[idx].question)) {
+        slicedPersonalized.push(defaultHr[idx]);
       }
       idx++;
     }
@@ -858,7 +898,7 @@ function mapAnalysisToQuestions(parsedData) {
       { question: "How do you ensure code quality and prevent bugs in production?", answer: "I write comprehensive unit tests, perform thorough code reviews, use CI/CD pipelines, and monitor system telemetry.", importance: "OPTIONAL" },
       { question: "Explain the difference between SQL and NoSQL databases, and when to use each.", answer: "Use SQL for structured, relational data with ACID compliance; use NoSQL for unstructured, high-throughput, horizontally scalable data.", importance: "OPTIONAL" },
       { question: "How do you optimize a slow database query or application bottleneck?", answer: "I profile execution plans, add appropriate database indexes, implement caching, and optimize algorithmic complexity.", importance: "OPTIONAL" },
-      { question: "What is your approach to designing microservices or modular systems?", answer: "I design around domain-driven boundaries, ensure loose coupling, use asynchronous messaging, and prioritize API contract versioning.", importance: "OPTIONAL" },
+      { question: "What is your approach to designing microservices or modular systems?", answer: "I design around domain-boundaries, ensure loose coupling, use asynchronous messaging, and prioritize API contract versioning.", importance: "OPTIONAL" },
       { question: "Describe your experience with cloud services and infrastructure-as-code.", answer: "I use AWS/GCP services for hosting, compute, and storage, and automate provisioning using tools like Terraform or CloudFormation.", importance: "OPTIONAL" },
       { question: "How do you stay up-to-date with new technologies and industry trends?", answer: "I read technical blogs, contribute to open source projects, build personal side-projects, and participate in developer communities.", importance: "OPTIONAL" }
     ];
@@ -871,58 +911,39 @@ function mapAnalysisToQuestions(parsedData) {
     }
   }
 
+  const fixedScreening = [
+    { question: "Are you looking for a job?", answer: "Yes, I am actively exploring new career opportunities that align with my skillset and growth goals.", importance: "SCREENING" },
+    { question: "How many years of experience do you have?", answer: "I have professional experience as detailed in my resume, spanning my key roles.", importance: "SCREENING" },
+    { question: "What is the reason for your job change?", answer: "I am seeking a new challenge where I can contribute to impactful projects and continue growing professionally.", importance: "SCREENING" },
+    { question: "What is your current CTC?", answer: "My current compensation is aligned with the industry standard for my level, and I can discuss details as we proceed.", importance: "SCREENING" },
+    { question: "What is your expected CTC?", answer: "I am looking for a competitive offer that reflects the role's responsibilities and my experience.", importance: "SCREENING" },
+    { question: "What is your notice period?", answer: "My notice period is standard, but I will check if there is any flexibility for an early release.", importance: "SCREENING" },
+    { question: "Is your notice period negotiable? (If the notice period is 30, 60, or 90 days)", answer: "I am open to negotiating the notice period or using accrued leaves to facilitate a smooth and faster transition.", importance: "SCREENING" }
+  ];
+
+  const hrQuestions = isJdMatch ? slicedPersonalized : [...fixedScreening, ...slicedPersonalized];
+
   parsedData.hrQuestions = hrQuestions;
   parsedData.technicalQuestions = technicalQuestions;
 }
 
 function getRecruiterSystemInstruction(aiProvider) {
-  if (aiProvider === 'ollama') {
-    return `You are a senior technical recruiter. Analyze the resume facts and generate a structured JSON analysis.
-1. Timeline & Gaps: Flag any gap >= 2 months. Include date range, length, probe question, and sample answer.
-2. Technical Audit: List skills, judge if backed by specifics. Generate probing questions and sample answers for shallow skills.
-3. Domain Bank: Generate EXACTLY 7 domain/technical questions (calibrated to seniority) with model answers.
-4. Project & Achievement Deep-Dive: Write 1-2 probe questions for claims/projects with model answers. Identify and highlight specific projects the candidate has completed that match their skills.
-5. HR & Behavioral: Generate EXACTLY 7 standard HR questions personalized with resume facts, plus model answers.
+  const todayDateString = new Date().toDateString();
+  const baseInstruction = `Senior recruiter bot. Date: ${todayDateString}. Analyze resume facts. Output structured JSON. Ground all claims/dates strictly in resume text. Fix OCR typos in links (e.g. iinkedin->linkedin).
+Sections:
+1. Gaps: Flag gaps >= 2 months. Include date range, duration, probing question, and sample answer.
+2. Technical Audit: List all skills. Judge if backed by specifics (versions, scale, outcomes) or name-dropped. Write probe questions + answer templates for shallow skills.
+3. Domain Bank: EXACTLY 7 domain/tech questions calibrated to seniority with model answers (2-4 sentences).
+4. Project Deep-Dive: Write 1-2 probe questions on claims/achievements with model answers. Identify and highlight specific projects matching their skills.
+5. HR/Behavioral: EXACTLY 7 candidate-specific personalized questions based on history (exclude generic CTC, notice, relocation questions) with model answers.
 6. Red Flags: List quality issues (severity, fix suggestion).
-7. Must-Prepare & Fit: Generate a checklist of 6-10 topics and a brief "why hire" summary.
-8. Projects: List projects completed by the candidate (name, description, skills used).
-CRITICAL: If you find a LinkedIn URL with OCR typos (e.g. "iinkedin" -> "linkedin"), fix the typo. Extract ALL data strictly from the resume text provided. Do NOT use any names, emails, or details from these instructions as candidate data.`;
+7. Prep & Fit: List 6-10 must-prepare topics and 2-3 sentence "why hire" pitch.
+8. Projects Mapping: List projects (name, description, skills used).`;
+
+  if (aiProvider === 'ollama') {
+    return `${baseInstruction}\nCRITICAL: Do NOT write any thinking process, reasoning, chain-of-thought, or <thinking> tags. Skip thinking entirely. Directly output the raw JSON object.`;
   }
-  return `You are a senior technical recruiter and hiring-panel interviewer. You have spent years interviewing candidates across multiple domains and you are known for catching exactly the things a resume tries to gloss over. When given a resume, you produce a detailed, structured analysis — never a generic summary. You ground every observation in specific facts from the resume (exact dates, company names, tools, numbers). You never invent facts that are not in the resume; if something is unclear, say so and ask about it.
-
-Run the following eight-part analysis on every resume, in order.
-
-### 1. Career Timeline & Gap Analysis
-- Reconstruct the candidate's full timeline: education end dates, every job's start/end date, and any stated career breaks.
-- Flag any gap of 2+ months between two consecutive entries (job-to-job, or education-to-first-job).
-- For each gap, output: the exact date range, its length, one direct interview question the candidate should expect, and a sample answer.
-- If there are no gaps, state that explicitly.
-
-### 2. Technical Depth Audit
-- List every tool, technology, platform, or skill the resume names.
-- For each one, judge whether it's backed by specifics (versions, named sub-components/services, scale, or outcome) or just name-dropped.
-- For every skill that's name-dropped without depth, write one targeted probing question plus a short answer template showing what a strong answer should cover.
-
-### 3. Domain Knowledge Question Bank
-- Generate EXACTLY 7 domain/technical concept questions a panel would realistically ask someone at this candidate's seniority level, ordered from fundamental to advanced.
-- Provide a model answer (2–4 sentences) for each question.
-
-### 4. Project & Achievement Deep-Dive
-- For each project or major responsibility listed, write one or two "prove it" follow-up questions targeting specific claims/projects, each with a model answer showing how a candidate who did the work would answer. Identify and highlight specific projects the candidate has completed that match their skills.
-
-### 5. HR & Behavioral Readiness
-- Generate EXACTLY 7 standard HR questions, personalized with the candidate's actual details: tell me about yourself; reason for leaving most recent company; reason for seeking a new role; expected compensation; why hire you; key strengths; 5-year vision. Provide sample answers built from the candidate's actual resume facts.
-
-### 6. Resume Red Flags & Quality Check
-- Call out concrete quality issues if present (severity, fix suggestion).
-
-### 7. Must-Prepare Topics & Fit Summary
-- Produce a checklist of 6–10 core topics this candidate should prepare, and a 2-3 sentence "why hire" pitch.
-
-### 8. Projects & Skills Mapping
-- List the candidate's projects. For each project, extract its name, description, and the matching skills/technologies from the candidate's skill list used in that project.
-
-CRITICAL: Extract ALL candidate data (name, email, phone, skills, experience, projects) strictly from the resume text provided below. Do NOT use any names, examples, or details from these instructions as candidate data. If a LinkedIn URL contains OCR typos, fix the typo and reconstruct the full URL.`;
+  return baseInstruction;
 }
 
 /**
@@ -1112,11 +1133,118 @@ export async function parseResume(resumeText, pdfBase64 = null) {
   return parsedData;
 }
 
+function parseDateString(str) {
+  if (!str) return null;
+  const clean = str.trim().toLowerCase();
+  if (
+    clean.includes('present') || 
+    clean.includes('current') || 
+    clean.includes('now') || 
+    clean.includes('date') || 
+    clean.includes('ongoing') || 
+    clean.includes('today')
+  ) {
+    return new Date();
+  }
+
+  // 1. Try matching numeric format like MM/YY, MM/YYYY, MM.YY, etc.
+  const numericDateMatch = clean.match(/\b(0?[1-9]|1[0-2])[-.\/\s']+(\d{2,4})\b/);
+  if (numericDateMatch) {
+    const month = parseInt(numericDateMatch[1], 10) - 1;
+    const yearText = numericDateMatch[2];
+    let year = parseInt(yearText, 10);
+    if (yearText.length === 2) {
+      year = year < 50 ? 2000 + year : 1900 + year;
+    }
+    return new Date(year, month, 1);
+  }
+
+  // 2. Try matching month names and years
+  const monthMap = {
+    jan: 0, january: 0,
+    feb: 1, february: 1,
+    mar: 2, march: 2,
+    apr: 3, april: 3,
+    may: 4,
+    jun: 5, june: 5,
+    jul: 6, july: 6,
+    aug: 7, august: 7,
+    sep: 8, sept: 8, september: 8,
+    oct: 9, october: 9,
+    nov: 10, november: 10,
+    dec: 11, december: 11
+  };
+
+  let month = 0;
+  for (const [key, val] of Object.entries(monthMap)) {
+    if (clean.includes(key)) {
+      month = val;
+      break;
+    }
+  }
+
+  // Look for 4-digit year
+  const yearMatch = clean.match(/\b(19|20)\d{2}\b/);
+  if (yearMatch) {
+    return new Date(parseInt(yearMatch[0], 10), month, 1);
+  }
+
+  // Look for 2-digit year
+  const twoDigitYearMatch = clean.match(/(?:\s+|'|\b)(\d{2})\b/);
+  if (twoDigitYearMatch) {
+    let year = parseInt(twoDigitYearMatch[1], 10);
+    year = year < 50 ? 2000 + year : 1900 + year;
+    return new Date(year, month, 1);
+  }
+
+  return null;
+}
+
+export function calculateTotalExperience(experience) {
+  if (!experience || !Array.isArray(experience) || experience.length === 0) {
+    return '0 months';
+  }
+
+  const parsedJobs = experience
+    .map(exp => {
+      const duration = exp.duration || '';
+      const parts = duration.split(/\s*(?:-|-|–|—|to)\s*/i);
+      if (parts.length === 0) return null;
+      const start = parseDateString(parts[0]);
+      const end = parts.length > 1 ? parseDateString(parts[1]) : start;
+      if (!start || !end) return null;
+      return { start, end };
+    })
+    .filter(Boolean);
+
+  let totalMs = 0;
+  parsedJobs.forEach(job => {
+    const diff = job.end - job.start;
+    // Add 1 month to include start month in duration
+    totalMs += diff + (30.4375 * 24 * 60 * 60 * 1000);
+  });
+
+  const totalMonths = Math.round(totalMs / (30.4375 * 24 * 60 * 60 * 1000));
+  if (totalMonths <= 0) return '0 months';
+
+  const years = Math.floor(totalMonths / 12);
+  const months = totalMonths % 12;
+
+  if (years > 0) {
+    return `${years} year${years !== 1 ? 's' : ''}${months > 0 ? ` ${months} month${months !== 1 ? 's' : ''}` : ''}`;
+  }
+  return `${months} month${months !== 1 ? 's' : ''}`;
+}
+
 /**
  * Scores and ranks a candidate against a job description.
  */
 export async function scoreCandidate(candidateProfile, jobDescription) {
-  const systemInstruction = 'You are a professional HR screener and hiring manager. Evaluate the candidate against the job description. Extract and compare the required job qualifications and skills exactly. DO NOT hallucinate or assume the candidate has skills, degrees, or experience not explicitly stated in their resume. Ground all matching and missing qualifications strictly in the provided text inputs.';
+  const totalExperience = calculateTotalExperience(candidateProfile.experience);
+  
+  const systemInstruction = `You are a professional HR screener and hiring manager. Evaluate the candidate against the job description. Extract and compare the required job qualifications and skills exactly. DO NOT hallucinate or assume the candidate has skills, degrees, or experience not explicitly stated in their resume. Ground all matching and missing qualifications strictly in the provided text inputs.
+
+Today's date is ${new Date().toDateString()}. Use the pre-calculated "totalExperience" field in the candidate profile for evaluating candidate's total years of experience. Compare it mathematically: for example, if the job description requires "5+ years experience", and the candidate's totalExperience is "8 years 5 months" or "6 years", this meets the requirement. Do NOT mark experience requirements as missing or unmet if the candidate's totalExperience is equal to or greater than the required years.`;
 
   const schema = {
     type: 'OBJECT',
@@ -1143,9 +1271,16 @@ export async function scoreCandidate(candidateProfile, jobDescription) {
     required: ['score', 'matchingSkills', 'missingSkills', 'reasoning']
   };
 
+  // Strip out large/irrelevant fields to keep prompt size manageable
+  const { resumeText, interviewQuestions, _id, __v, createdAt, updatedAt, resumePath, tags, redFlags, careerGaps, ...cleanProfile } = candidateProfile;
+  const profileToEval = {
+    ...cleanProfile,
+    totalExperience
+  };
+
   const prompt = `
 Candidate Profile:
-${JSON.stringify(candidateProfile, null, 2)}
+${JSON.stringify(profileToEval, null, 2)}
 
 Job Description:
 Title: ${jobDescription.title}
@@ -1154,7 +1289,40 @@ Description: ${jobDescription.description}
 
 Evaluate this candidate for the job strictly. Compare all required qualifications (skills, experience level, tools) and list matches and gaps without any hallucinations:`;
 
-  return await callAIProvider(prompt, systemInstruction, schema);
+  const result = await callAIProvider(prompt, systemInstruction, schema);
+
+  if (result && Array.isArray(result.missingSkills)) {
+    const yearsMatch = totalExperience.match(/^(\d+)\s+years?/);
+    const candidateYears = yearsMatch ? parseInt(yearsMatch[1], 10) : 0;
+
+    result.missingSkills = result.missingSkills.filter(skill => {
+      const skillLower = skill.toLowerCase();
+      const isExpRequirement = skillLower.includes('year') && (skillLower.includes('exp') || skillLower.includes('work') || /\b\d+\b/.test(skillLower));
+      
+      if (isExpRequirement) {
+        const reqMatch = skillLower.match(/\b(\d+)\b/);
+        if (reqMatch) {
+          const requiredYears = parseInt(reqMatch[1], 10);
+          if (candidateYears >= requiredYears) {
+            if (result.matchingSkills && !result.matchingSkills.includes(skill)) {
+              result.matchingSkills.push(skill);
+            }
+            return false;
+          }
+        } else {
+          if (candidateYears >= 5) {
+            if (result.matchingSkills && !result.matchingSkills.includes(skill)) {
+              result.matchingSkills.push(skill);
+            }
+            return false;
+          }
+        }
+      }
+      return true;
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -1211,7 +1379,11 @@ Assign appropriate tags to this candidate for each of the specified tag categori
  * Scores and ranks a candidate against their own primary field of expertise/category.
  */
 export async function scoreCandidateByOwnCategory(candidateProfile) {
-  const systemInstruction = 'You are a professional HR screener and hiring manager. Evaluate the candidate\'s profile based on their own primary field of expertise (e.g. Software Engineer, Product Designer, QA) and output a score and details matching the schema.';
+  const totalExperience = calculateTotalExperience(candidateProfile.experience);
+
+  const systemInstruction = `You are a professional HR screener and hiring manager. Evaluate the candidate's profile based on their own primary field of expertise (e.g. Software Engineer, Product Designer, QA) and output a score and details matching the schema.
+  
+Today's date is ${new Date().toDateString()}. Use the pre-calculated "totalExperience" field in the candidate profile for evaluating candidate's total years of experience.`;
 
   const schema = {
     type: 'OBJECT',
@@ -1238,9 +1410,14 @@ export async function scoreCandidateByOwnCategory(candidateProfile) {
     required: ['score', 'matchingSkills', 'missingSkills', 'reasoning']
   };
 
+  const profileToEval = {
+    ...candidateProfile,
+    totalExperience
+  };
+
   const prompt = `
 Candidate Profile:
-${JSON.stringify(candidateProfile, null, 2)}
+${JSON.stringify(profileToEval, null, 2)}
 
 Identify the candidate's primary job category (e.g. React Frontend Developer, Python Data Scientist) based on their resume, and score their overall competency in that specific category:`;
 
@@ -1389,10 +1566,19 @@ ${JSON.stringify(candidateProfile, null, 2)}
 
 ${jobDescription ? `Job Description:\nTitle: ${jobDescription.title}\nRequirements: ${jobDescription.requirements}\nDescription: ${jobDescription.description}` : 'Job Description: None (General Role)'}
 
-Perform the technical recruiter seven-part analysis on this candidate:`;
+Perform the technical recruiter seven-part analysis on this candidate. 
+
+CRITICAL PROJECT INTERVIEW QUESTION LOGIC:
+For any key project concepts, methodologies, or specialized tools required in the Job Description (e.g., "ArcGIS analysis", "spatial modeling"):
+1. If the candidate HAS a project in their profile that matches the concept:
+   - Under 'project_deep_dive', write a 'claim' referencing their matching project, and generate specific follow-up questions probing the technical details, challenges, and tools they used.
+2. If the candidate does NOT have any project matching the concept in their profile:
+   - Under 'project_deep_dive', write a 'claim' like "Missing project/experience in [Concept Name]" (e.g., "Missing ArcGIS analyst project"). 
+   - Generate a two-part follow-up question that asks: "Have you done any projects in this concept [insert concept]? If yes, please describe the architecture and your role. If no, how would you approach designing or building such a system from scratch?"
+   - Provide a model answer template showing the technical guidelines for a strong response.`;
 
   const parsedData = await callAIProvider(prompt, systemInstruction, schema);
-  mapAnalysisToQuestions(parsedData);
+  mapAnalysisToQuestions(parsedData, true);
   return parsedData;
 }
 

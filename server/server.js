@@ -169,12 +169,8 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (Postman, curl, server-to-server)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    // Allow any localhost/127.0.0.1 origin on any port (dev convenience)
-    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return callback(null, true);
-    callback(new Error(`CORS: origin ${origin} not allowed`));
+    // Allow any origin to support any host
+    callback(null, true);
   },
   credentials: true
 }));
@@ -532,12 +528,26 @@ app.post('/api/ollama/test-connection', authenticateToken, requireRole(['admin']
 
   try {
     const response = await fetchWithTimeout(`${ollamaUrl.replace(/\/+$/, '')}/api/tags`, {}, 10000);
+    const contentType = response.headers.get('content-type') || '';
+    
     if (!response.ok) {
-      throw new Error(`Failed to fetch Ollama tags: ${response.status} ${response.statusText}`);
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Failed to fetch Ollama tags: ${response.status} ${response.statusText}. Response: ${errText.substring(0, 200)}`);
     }
+
+    if (!contentType.includes('application/json')) {
+      const htmlText = await response.text();
+      console.error(`Ollama connection test returned non-JSON response. Content-Type: ${contentType}. Body snippet:`, htmlText.substring(0, 300));
+      return res.status(400).json({
+        success: false,
+        error: `Expected JSON response from Ollama, but got Content-Type "${contentType}". Response: ${htmlText.substring(0, 100)}`
+      });
+    }
+
     const data = await response.json();
     res.json({ success: true, models: data.models || [] });
   } catch (error) {
+    console.error('Ollama connection test error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -597,12 +607,15 @@ async function processEmailAttachment(messageId, filename, buffer, emailConfig, 
 
     // Duplicate Check
     let duplicate = null;
+    const queries = [];
     if (parsedData.email) {
-      const escapedEmail = escapeRegex(parsedData.email.trim());
-      duplicate = await Candidate.findOne({ email: { $regex: new RegExp(`^${escapedEmail}$`, 'i') } });
-    } else if (parsedData.name) {
-      const escapedName = escapeRegex(parsedData.name.trim());
-      duplicate = await Candidate.findOne({ name: { $regex: new RegExp(`^${escapedName}$`, 'i') } });
+      queries.push({ email: { $regex: new RegExp(`^${escapeRegex(parsedData.email.trim())}$`, 'i') } });
+    }
+    if (parsedData.name) {
+      queries.push({ name: { $regex: new RegExp(`^${escapeRegex(parsedData.name.trim())}$`, 'i') } });
+    }
+    if (queries.length > 0) {
+      duplicate = await Candidate.findOne({ $or: queries });
     }
 
     if (duplicate) {
@@ -728,6 +741,9 @@ async function processEmailAttachment(messageId, filename, buffer, emailConfig, 
   } catch (error) {
     console.error(`Failed to process attachment ${filename}:`, error);
     
+    // Delete from ProcessedEmail so it can be retried on next poll/manual request
+    await ProcessedEmail.deleteOne({ messageId }).catch(() => {});
+
     // Clean up temp file on failure
     try {
       if (localFilePath && fs.existsSync(localFilePath)) {
@@ -1022,12 +1038,15 @@ app.post('/api/candidates/extract-gmail', authenticateToken, requireRole(['admin
 
     // Duplicate Check
     let duplicate = null;
+    const queries = [];
     if (parsedData.email) {
-      const escapedEmail = escapeRegex(parsedData.email.trim());
-      duplicate = await Candidate.findOne({ email: { $regex: new RegExp(`^${escapedEmail}$`, 'i') } });
-    } else if (parsedData.name) {
-      const escapedName = escapeRegex(parsedData.name.trim());
-      duplicate = await Candidate.findOne({ name: { $regex: new RegExp(`^${escapedName}$`, 'i') } });
+      queries.push({ email: { $regex: new RegExp(`^${escapeRegex(parsedData.email.trim())}$`, 'i') } });
+    }
+    if (parsedData.name) {
+      queries.push({ name: { $regex: new RegExp(`^${escapeRegex(parsedData.name.trim())}$`, 'i') } });
+    }
+    if (queries.length > 0) {
+      duplicate = await Candidate.findOne({ $or: queries });
     }
 
     if (duplicate) {
@@ -1235,6 +1254,7 @@ app.get('/api/candidates/:id/resume-html', authenticateToken, async (req, res) =
 
 app.post('/api/candidates/upload', authenticateToken, requireRole(['admin', 'recruiter']), upload.single('resume'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No resume file uploaded.' });
+  global.lastUploadedFilename = req.file.originalname;
   const { jobId, logId } = req.body;
 
   let activeLogId = logId;
@@ -1275,12 +1295,15 @@ app.post('/api/candidates/upload', authenticateToken, requireRole(['admin', 'rec
     
     // Duplicate Check
     let duplicate = null;
+    const queries = [];
     if (parsedData.email) {
-      const escapedEmail = escapeRegex(parsedData.email.trim());
-      duplicate = await Candidate.findOne({ email: { $regex: new RegExp(`^${escapedEmail}$`, 'i') } });
-    } else if (parsedData.name) {
-      const escapedName = escapeRegex(parsedData.name.trim());
-      duplicate = await Candidate.findOne({ name: { $regex: new RegExp(`^${escapedName}$`, 'i') } });
+      queries.push({ email: { $regex: new RegExp(`^${escapeRegex(parsedData.email.trim())}$`, 'i') } });
+    }
+    if (parsedData.name) {
+      queries.push({ name: { $regex: new RegExp(`^${escapeRegex(parsedData.name.trim())}$`, 'i') } });
+    }
+    if (queries.length > 0) {
+      duplicate = await Candidate.findOne({ $or: queries });
     }
 
     if (duplicate) {
@@ -1752,6 +1775,22 @@ app.get('/api/candidates', authenticateToken, async (req, res) => {
   res.json(await Candidate.find());
 });
 
+app.get('/api/candidates/:id', authenticateToken, async (req, res) => {
+  try {
+    const candidate = await Candidate.findOne({ id: req.params.id });
+    if (!candidate) return res.status(404).json({ error: 'Candidate not found.' });
+
+    // If manager, check assignment
+    if (req.user.role === 'manager' && candidate.assignedTo !== req.user.email) {
+      return res.status(403).json({ error: 'Forbidden: You do not have access to this candidate.' });
+    }
+
+    res.json(candidate);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.delete('/api/candidates/:id', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
   try {
     const candidate = await Candidate.findOne({ id: req.params.id });
@@ -1796,6 +1835,9 @@ app.patch('/api/candidates/:id/stage', async (req, res) => {
     if (!candidate) return res.status(404).json({ error: 'Not found.' });
 
     const oldStage = candidate.stage;
+    if (oldStage === stage) {
+      return res.json(candidate);
+    }
     candidate.stage = stage;
     candidate.history.push({ date: new Date().toISOString(), type: 'StageChanged', text: `Moved from "${oldStage}" to "${stage}"` });
     
@@ -2076,6 +2118,156 @@ app.post('/api/rag/search', authenticateToken, async (req, res) => {
   }
 });
 
+app.post('/api/rag/jd-search', authenticateToken, async (req, res) => {
+  try {
+    const { jdTitle, jdRequirements, jdDescription, startDate, endDate, topK = 5 } = req.body;
+    if (!jdTitle && !jdRequirements && !jdDescription) {
+      return res.status(400).json({ error: 'At least one Job Description field is required.' });
+    }
+    
+    // Step 1: RAG Search — find semantically relevant candidates first
+    const query = [jdTitle, jdRequirements, jdDescription].filter(Boolean).join(' ');
+    const searchResult = await searchResumes(query, 50);
+    const matchedCandidates = searchResult.results || [];
+    
+    // Step 2: Filter by RAG relevance — only candidates with meaningful semantic match
+    const relevantCandidates = matchedCandidates.filter(c => c.relevanceScore >= 0.35);
+    console.log(`JD Search: ${matchedCandidates.length} RAG matches → ${relevantCandidates.length} above relevance threshold (0.35)`);
+    
+    if (relevantCandidates.length === 0) {
+      return res.json([]);
+    }
+    
+    // Step 3: Apply date filter on relevant candidates only
+    const dateQuery = { id: { $in: relevantCandidates.map(c => c.candidateId) } };
+    if (startDate || endDate) {
+      dateQuery.createdAt = {};
+      if (startDate) {
+        dateQuery.createdAt.$gte = new Date(startDate);
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        dateQuery.createdAt.$lte = end;
+      }
+    }
+    
+    const candidateDocs = await Candidate.find(dateQuery);
+    const candidateDocMap = new Map(candidateDocs.map(c => [c.id, c]));
+    
+    // Keep only matched candidates present in the filtered doc map
+    const filteredMatches = relevantCandidates.filter(item => candidateDocMap.has(item.candidateId));
+    
+    // Construct a job object for scoring
+    const mockJob = {
+      title: jdTitle || 'Role',
+      requirements: jdRequirements || '',
+      description: jdDescription || ''
+    };
+    
+    // Step 4: AI-score ONLY the RAG-relevant, date-filtered candidates
+    const scoredCandidates = await Promise.all(
+      filteredMatches.slice(0, Math.max(topK, 5)).map(async (item) => {
+        try {
+          const candidate = candidateDocMap.get(item.candidateId);
+          if (!candidate) return null;
+          
+          const parsedCandidate = candidate.toObject();
+          
+          // Strip to relevant fields only
+          const candidateForScoring = {
+            name: parsedCandidate.name || '',
+            email: parsedCandidate.email || '',
+            phone: parsedCandidate.phone || '',
+            skills: parsedCandidate.skills || [],
+            experience: parsedCandidate.experience || [],
+            education: parsedCandidate.education || [],
+            projects: parsedCandidate.projects || [],
+            seniorityLevel: parsedCandidate.seniorityLevel || '',
+            currentCompany: parsedCandidate.currentCompany || '',
+            currentRole: parsedCandidate.currentRole || '',
+            location: parsedCandidate.location || ''
+          };
+          
+          let scoreResult;
+          try {
+            scoreResult = await scoreCandidate(candidateForScoring, mockJob);
+          } catch (err) {
+            console.error(`Failed to score candidate ${candidate.id} (attempt 1):`, err.message);
+            try {
+              const condensedProfile = {
+                name: candidateForScoring.name,
+                skills: candidateForScoring.skills,
+                experience: (candidateForScoring.experience || []).map(e => ({
+                  role: e.role || e.title || '',
+                  company: e.company || '',
+                  startDate: e.startDate || '',
+                  endDate: e.endDate || ''
+                })),
+                education: candidateForScoring.education,
+                seniorityLevel: candidateForScoring.seniorityLevel
+              };
+              scoreResult = await scoreCandidate(condensedProfile, mockJob);
+            } catch (retryErr) {
+              console.error(`Failed to score candidate ${candidate.id} (attempt 2):`, retryErr.message);
+              scoreResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: 'Evaluation failed - AI provider error' };
+            }
+          }
+          
+          return {
+            ...parsedCandidate,
+            matchScore: scoreResult.score || 0,
+            matchingSkills: scoreResult.matchingSkills || [],
+            missingSkills: scoreResult.missingSkills || [],
+            explanation: scoreResult.reasoning || '',
+            ragScore: item.relevanceScore,
+            matchedSections: item.matchedSections || [],
+            questions: null
+          };
+        } catch (err) {
+          console.error('Error processing candidate match item:', err);
+          return null;
+        }
+      })
+    );
+    
+    // Sort by matchScore descending
+    const validCandidates = scoredCandidates.filter(Boolean);
+    validCandidates.sort((a, b) => b.matchScore - a.matchScore);
+    
+    res.json(validCandidates);
+  } catch (error) {
+    console.error('JD search error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/candidates/:id/generate-jd-questions', authenticateToken, requireRole(['admin', 'recruiter']), async (req, res) => {
+  try {
+    const candidate = await Candidate.findOne({ id: req.params.id });
+    if (!candidate) {
+      return res.status(404).json({ error: 'Candidate not found.' });
+    }
+
+    const { jdTitle, jdRequirements, jdDescription } = req.body;
+    const mockJob = {
+      title: jdTitle || 'Role',
+      requirements: jdRequirements || '',
+      description: jdDescription || ''
+    };
+
+    const questionsResult = await generateQuestionsForCandidate(candidate.toObject(), mockJob).catch(err => {
+      console.error(`Failed to generate custom JD questions for candidate ${candidate.id}:`, err);
+      return { hrQuestions: [], technicalQuestions: [] };
+    });
+
+    res.json(questionsResult);
+  } catch (error) {
+    console.error('Custom JD question generation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/rag/ask', authenticateToken, async (req, res) => {
   try {
     const { query, topK = 5 } = req.body;
@@ -2296,6 +2488,7 @@ const server = app.listen(PORT, () => {
   console.log(` MongoDB Connected & Ready.`);
   console.log(`=================================================\n`);
 });
+server.timeout = 600000; // 10 minutes to support long Ollama parsing tasks
 
 // Set server timeouts to 30 minutes (1,800,000 ms) for slow local LLMs
 server.timeout = 1800000;

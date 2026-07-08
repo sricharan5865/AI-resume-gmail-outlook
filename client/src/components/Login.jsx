@@ -7,7 +7,7 @@ export default function Login({ backendUrl, onLoginSuccess }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const host = backendUrl || 'http://localhost:5000';
+  const host = backendUrl || '';
 
   const handleSubmit = async (e) => {
     e.preventDefault();

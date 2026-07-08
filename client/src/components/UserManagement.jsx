@@ -7,7 +7,7 @@ export default function UserManagement({ backendUrl, token }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  const host = backendUrl || 'http://localhost:5000';
+  const host = backendUrl || '';
 
   // Create User Form State
   const [newEmail, setNewEmail] = useState('');

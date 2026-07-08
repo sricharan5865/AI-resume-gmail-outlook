@@ -343,7 +343,10 @@ export default function SettingsView({ token, jobs, templates, onJobCreated, onJ
         body: JSON.stringify(updateData)
       });
 
-      if (!res.ok) throw new Error('Failed to save settings');
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Server returned ${res.status}`);
+      }
       alert('Sourcing & AI Agent settings saved successfully!');
       checkAuthStatus();
       if (onSettingsSaved) onSettingsSaved();

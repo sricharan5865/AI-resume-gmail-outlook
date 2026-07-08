@@ -316,7 +316,7 @@ async function callAIProviderForClassification(prompt, systemInstruction) {
     if (isOpenRouter) {
       const url = 'https://openrouter.ai/api/v1/chat/completions';
       const requestBody = {
-        model: process.env.AI_MODEL || 'google/gemini-2.5-flash',
+        model: process.env.AI_MODEL || 'google/gemini-3.1-pro-preview',
         max_tokens: 8192,
         messages: [
           ...(systemInstruction ? [{ role: 'system', content: systemInstruction }] : []),

@@ -7,7 +7,8 @@ process.env.NODE_ENV = 'test';
 // Mock global fetch to intercept outgoing LLM calls
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (url, options) => {
-  const urlString = typeof url === 'object' ? url.toString() : url;
+  const urlString = typeof url === 'object' ? (url.url || url.toString()) : url;
+  console.log(`[TEST HARNESS FETCH] url type: ${typeof url}, urlString: "${urlString}"`);
   
   if (urlString.includes('openrouter.ai') || urlString.includes('generativelanguage.googleapis.com')) {
     let body = {};
@@ -17,10 +18,103 @@ globalThis.fetch = async (url, options) => {
       } catch (e) {}
     }
 
+    // Intercept embeddings request to return mock embedding vectors
+    if (urlString.includes('batchEmbedContents') || urlString.includes('embeddings') || urlString.includes('embed')) {
+      console.log(`[TEST HARNESS FETCH] Intercepted embeddings request: ${urlString}`);
+      let numEmbeddings = 1;
+      if (body.requests) {
+        numEmbeddings = body.requests.length;
+      } else if (body.input) {
+        numEmbeddings = Array.isArray(body.input) ? body.input.length : 1;
+      }
+      const embeddings = Array(numEmbeddings).fill(0).map(() => ({
+        values: Array(768).fill(0.01)
+      }));
+      return {
+        ok: true,
+        status: 200,
+        headers: {
+          get: (name) => {
+            if (name.toLowerCase() === 'content-type') return 'application/json';
+            return null;
+          }
+        },
+        json: async () => ({
+          embeddings,
+          data: embeddings.map((emb, idx) => ({
+            embedding: emb.values,
+            index: idx
+          }))
+        })
+      };
+    }
+
+    let promptText = '';
+    if (body.messages && body.messages.length > 0) {
+      promptText = body.messages[body.messages.length - 1].content || '';
+    } else if (body.contents && body.contents[0] && body.contents[0].parts && body.contents[0].parts[0]) {
+      promptText = body.contents[0].parts[0].text || '';
+    }
+
+    let candidateName = "Test Candidate";
+    let candidateEmail = "test@example.com";
+    if (promptText) {
+      const emailMatch = promptText.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/);
+      if (emailMatch) {
+        candidateEmail = emailMatch[1];
+        const lines = promptText.split('\n');
+        for (const line of lines) {
+          if (line.includes('Email:')) {
+            const idx = lines.indexOf(line);
+            if (idx > 0 && lines[idx - 1].trim()) {
+              candidateName = lines[idx - 1].trim();
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // Try to extract from global state
+    if (global.lastUploadedFilename) {
+      if (global.lastUploadedFilename.toLowerCase().includes('alice')) {
+        candidateName = 'Alice';
+        candidateEmail = 'alice@example.com';
+      } else if (global.lastUploadedFilename.toLowerCase().includes('bob')) {
+        candidateName = 'Bob';
+        candidateEmail = 'bob@example.com';
+      } else if (global.lastUploadedFilename.toLowerCase().includes('john')) {
+        candidateName = 'John Doe';
+        candidateEmail = 'john@example.com';
+      }
+    } else {
+      // Try to extract from pdfBase64
+      let pdfBase64 = null;
+      if (body.contents && body.contents[0] && body.contents[0].parts) {
+        const part = body.contents[0].parts.find(p => p.inlineData && p.inlineData.data);
+        if (part) {
+          pdfBase64 = part.inlineData.data;
+        }
+      }
+      if (pdfBase64) {
+        const decoded = Buffer.from(pdfBase64, 'base64').toString('utf-8');
+        if (decoded.includes('Alice')) {
+          candidateName = 'Alice';
+          candidateEmail = 'alice@example.com';
+        } else if (decoded.includes('Bob')) {
+          candidateName = 'Bob';
+          candidateEmail = 'bob@example.com';
+        } else if (decoded.includes('John Doe')) {
+          candidateName = 'John Doe';
+          candidateEmail = 'john@example.com';
+        }
+      }
+    }
+
     // Default mock response structure for resume parsing and Q&As
     let parsedResponse = {
-      name: "Test Candidate",
-      email: "test@example.com",
+      name: candidateName,
+      email: candidateEmail,
       phone: "123-456-7890",
       linkedinUrl: "https://linkedin.com/in/test",
       skills: ["JavaScript", "HTML", "CSS"],

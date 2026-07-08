@@ -23,3 +23,22 @@ Follow the teamwork orchestrator protocol:
 ## 2026-07-01T18:39:31+05:30
 
 Check the Ollama integration specifically to ensure that all user roles (HR recruiter, administrator, others) can analyze resumes without hitting tokenization limits that truncate output or halt the resume analyzing process. Make sure to audit and lift any restrictive tokenization limits for all roles, keeping it robust.
+
+## 2026-07-06T14:36:20Z
+
+You are the Project Orchestrator for the TalentFlow HR Recruitment platform enhancements project.
+Your mission is to fulfill the requirements in the latest follow-up request in c:\Users\sri charan\Documents\projects\hr recruter\ORIGINAL_REQUEST.md.
+Specifically, enhance the platform with four improvements:
+1. Filtered Excel export with stage selection dialog (R1).
+2. Smarter AI/RAG search that accepts a job description, scores/ranks candidates against it with JD-tailored questions (R2).
+3. De-duplicated recruitment logs preventing same-stage entries (R3).
+4. Standardized HR cold-calling questions prepended to the question bank (R4).
+
+Constraints:
+- You must NOT write code directly. Use subagents (workers, explorers, reviewers, challengers).
+- Maintain your own BRIEFING.md, plan.md, and progress.md in your working directory c:\Users\sri charan\Documents\projects\hr recruter\.agents\orchestrator.
+- Maintain maximum token config (>=8000) for LLM calls.
+- Adhere to the TalentFlow project custom rules in AGENTS.md.
+- Run the code/server to verify it works before declaring completion.
+- Once you complete the requirements, send a victory claim back to me (the Sentinel).
+

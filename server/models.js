@@ -151,7 +151,7 @@ const ingestionLogSchema = new mongoose.Schema({
 const resumeChunkSchema = new mongoose.Schema({
   chunkId: { type: String, required: true, unique: true },
   candidateId: { type: String, required: true, index: true },
-  section: { type: String, required: true, enum: ['contact', 'skills', 'experience', 'education', 'summary', 'tags'] },
+  section: { type: String, required: true, enum: ['contact', 'skills', 'experience', 'education', 'summary', 'tags', 'projects'] },
   text: { type: String, required: true },
   embedding: { type: [Number], required: true },
   metadata: {

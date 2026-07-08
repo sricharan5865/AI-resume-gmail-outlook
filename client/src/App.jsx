@@ -86,7 +86,18 @@ export default function App() {
       fetchData(true); // silent fetch
     }, 30000);
 
-    return () => clearInterval(interval);
+    // 3. Immediately sync when switching tabs/windows back to the app
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        fetchData(true); // silent fetch
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [token]);
 
   const showToast = (message, type = 'success') => {
@@ -629,8 +640,8 @@ export default function App() {
         
         {/* Top Header */}
         <header className="header glass">
-          <div>
-            <h2 style={{ fontSize: '18px', fontWeight: '700' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: '700', marginBottom: 0 }}>
               {activeTab === 'dashboard' && 'Recruitment Analytics'}
               {activeTab === 'inbox' && (emailProvider === 'outlook' ? 'Outlook Sourcing Queue' : 'Gmail Sourcing Queue')}
               {activeTab === 'pipeline' && 'Talent Pipeline Kanban'}
@@ -639,6 +650,9 @@ export default function App() {
               {activeTab === 'reporting' && 'Reporting & Analytics'}
               {activeTab === 'settings' && 'System Configuration'}
             </h2>
+            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+              {new Date().toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
+            </span>
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>

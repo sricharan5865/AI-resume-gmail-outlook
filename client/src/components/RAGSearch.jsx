@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  Search, Sparkles, Send, User, Briefcase, GraduationCap, Tag, Clock,
+  Search, Sparkles, Send, User, Briefcase, GraduationCap, Tag, Clock, Calendar,
   ChevronRight, ChevronDown, Zap, Brain, RotateCcw, Mail, Eye, Loader2,
   Database, MessageSquare, ArrowRight, X
 } from 'lucide-react';
@@ -35,6 +35,14 @@ function clearHistory() {
   return [];
 }
 
+function getTodayString() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidate, showToast, BACKEND_URL, token }) {
   const [mode, setMode] = useState('search'); // 'search' | 'ask'
   const [query, setQuery] = useState('');
@@ -54,6 +62,85 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
 
   // Expanded matched sections per result
   const [expandedSections, setExpandedSections] = useState({});
+  const [jdTitle, setJdTitle] = useState('');
+  const [jdRequirements, setJdRequirements] = useState('');
+  const [jdDescription, setJdDescription] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [jdResults, setJdResults] = useState(null);
+  const [expandedQuestions, setExpandedQuestions] = useState({});
+  const [loadingQuestions, setLoadingQuestions] = useState({});
+ 
+  const toggleQuestions = async (candidateId) => {
+    const alreadyExpanded = !!expandedQuestions[candidateId];
+    setExpandedQuestions(prev => ({ ...prev, [candidateId]: !prev[candidateId] }));
+ 
+    const candidate = jdResults?.find(c => c.id === candidateId);
+    if (!alreadyExpanded && candidate && !candidate.questions && !loadingQuestions[candidateId]) {
+      setLoadingQuestions(prev => ({ ...prev, [candidateId]: true }));
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/candidates/${candidateId}/generate-jd-questions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            jdTitle,
+            jdRequirements,
+            jdDescription
+          })
+        });
+        if (res.ok) {
+          const questions = await res.json();
+          setJdResults(prev => prev.map(c => c.id === candidateId ? { ...c, questions } : c));
+        }
+      } catch (err) {
+        console.error('Failed to generate tailored questions:', err);
+      } finally {
+        setLoadingQuestions(prev => ({ ...prev, [candidateId]: false }));
+      }
+    }
+  };
+
+  const executeJdMatch = async (e) => {
+    e?.preventDefault();
+    if (!jdTitle.trim() && !jdRequirements.trim() && !jdDescription.trim()) {
+      showToast('Please provide at least one Job Description field.', 'error');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setJdResults(null);
+    const startTime = Date.now();
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rag/jd-search`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          jdTitle: jdTitle.trim(),
+          jdRequirements: jdRequirements.trim(),
+          jdDescription: jdDescription.trim(),
+          startDate: startDate || undefined,
+          endDate: endDate || undefined,
+          topK: 10
+        })
+      });
+      if (!res.ok) throw new Error(`JD Match failed (${res.status})`);
+      const data = await res.json();
+      setJdResults(data || []);
+      setQueryTime(Date.now() - startTime);
+    } catch (err) {
+      console.error('JD Match error:', err);
+      setError(err.message || 'Something went wrong');
+      showToast(err.message || 'JD Match failed', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const inputRef = useRef(null);
   const debounceRef = useRef(null);
@@ -188,7 +275,10 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
           },
           body: JSON.stringify({ query: searchQuery, topK: 10 })
         });
-        if (!res.ok) throw new Error(`Search failed (${res.status})`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Search failed (${res.status})`);
+        }
         const data = await res.json();
         setResults(data.results || data || []);
         setQueryTime(Date.now() - startTime);
@@ -201,7 +291,10 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
           },
           body: JSON.stringify({ query: searchQuery, topK: 5 })
         });
-        if (!res.ok) throw new Error(`Ask AI failed (${res.status})`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Ask AI failed (${res.status})`);
+        }
         const data = await res.json();
         setAiAnswer({ answer: data.answer || data.response || '', sources: data.sources || data.candidates || [] });
         setQueryTime(Date.now() - startTime);
@@ -328,9 +421,9 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
   };
 
   const showHistory = inputFocused && !query && history.length > 0;
-  const hasSearched = results !== null || aiAnswer !== null;
+  const hasSearched = results !== null || aiAnswer !== null || jdResults !== null;
   const showEmptyState = !hasSearched && !loading && !error;
-  const showNoResults = hasSearched && !loading && mode === 'search' && results && results.length === 0;
+  const showNoResults = hasSearched && !loading && ((mode === 'search' && results && results.length === 0) || (mode === 'match-jd' && jdResults && jdResults.length === 0));
 
   return (
     <div className="rag-container">
@@ -351,79 +444,191 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
       <div className="rag-mode-toggle">
         <button
           className={`rag-mode-btn ${mode === 'search' ? 'rag-mode-active' : ''}`}
-          onClick={() => { setMode('search'); setResults(null); setAiAnswer(null); setError(null); }}
+          onClick={() => { setMode('search'); setResults(null); setAiAnswer(null); setJdResults(null); setError(null); }}
         >
           <Search size={15} />
           <span>Search</span>
         </button>
         <button
           className={`rag-mode-btn ${mode === 'ask' ? 'rag-mode-active' : ''}`}
-          onClick={() => { setMode('ask'); setResults(null); setAiAnswer(null); setError(null); }}
+          onClick={() => { setMode('ask'); setResults(null); setAiAnswer(null); setJdResults(null); setError(null); }}
         >
           <Brain size={15} />
           <span>Ask AI</span>
         </button>
+        <button
+          className={`rag-mode-btn ${mode === 'match-jd' ? 'rag-mode-active' : ''}`}
+          onClick={() => { setMode('match-jd'); setResults(null); setAiAnswer(null); setJdResults(null); setError(null); }}
+        >
+          <Briefcase size={15} />
+          <span>JD Match</span>
+        </button>
       </div>
 
-      {/* Search Bar */}
-      <form className="rag-search-bar" onSubmit={handleSubmit}>
-        <div className={`rag-search-input-wrapper ${inputFocused ? 'rag-input-focused' : ''}`}>
-          <Search size={18} className="rag-search-icon" />
-          <input
-            ref={inputRef}
-            type="text"
-            className="rag-search-input"
-            placeholder={mode === 'search'
-              ? 'Search candidates by skills, experience, qualifications...'
-              : 'Ask anything about your candidates...'
-            }
-            value={query}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setTimeout(() => { setInputFocused(false); setShowSuggestions(false); }, 200)}
-            autoComplete="off"
-          />
-          <button
-            type="submit"
-            className="rag-search-btn"
-            disabled={!query.trim() || loading}
-          >
-            {loading ? <Loader2 size={18} className="rag-spin" /> : <ArrowRight size={18} />}
-          </button>
-
-          {/* Tag Suggestions Dropdown */}
-          {showSuggestions && suggestions.length > 0 && (
-            <div 
-              style={{ 
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                right: 0,
-                marginTop: '8px',
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--glass-border)',
+      {/* Search Bar / JD Match Form */}
+      {mode === 'match-jd' ? (
+        <form className="glass" style={{ padding: '24px', borderRadius: 'var(--radius-lg)', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid var(--glass-border)' }} onSubmit={executeJdMatch}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Job Title</label>
+            <input
+              type="text"
+              placeholder="e.g. Senior Frontend Developer"
+              value={jdTitle}
+              onChange={(e) => setJdTitle(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px 14px',
                 borderRadius: 'var(--radius-md)',
-                boxShadow: 'var(--shadow-lg)',
-                zIndex: 50,
-                maxHeight: '200px',
-                overflowY: 'auto'
+                border: '1px solid var(--glass-border)',
+                background: 'rgba(255, 255, 255, 0.03)',
+                color: 'var(--text-primary)'
               }}
-            >
-              {suggestions.map((suggestion, idx) => (
-                <div 
-                  key={idx}
-                  className="rag-suggestion-item"
-                  onMouseDown={() => handleSuggestionClick(suggestion)}
-                >
-                  <Tag size={12} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
-                  <span>{suggestion}</span>
-                </div>
-              ))}
+            />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Key Requirements / Skills</label>
+            <textarea
+              placeholder="e.g. React, Node.js, Mongoose, REST APIs, CI/CD"
+              value={jdRequirements}
+              onChange={(e) => setJdRequirements(e.target.value)}
+              rows={3}
+              style={{
+                width: '100%',
+                padding: '10px 14px',
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--glass-border)',
+                background: 'rgba(255, 255, 255, 0.03)',
+                color: 'var(--text-primary)',
+                resize: 'vertical'
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>Job Description / Details</label>
+            <textarea
+              placeholder="Describe the role responsibilities, team structure, and overall context..."
+              value={jdDescription}
+              onChange={(e) => setJdDescription(e.target.value)}
+              rows={4}
+              style={{
+                width: '100%',
+                padding: '10px 14px',
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--glass-border)',
+                background: 'rgba(255, 255, 255, 0.03)',
+                color: 'var(--text-primary)',
+                resize: 'vertical'
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: '1 1 200px' }}>
+              <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>From Date (Resume Import)</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--glass-border)',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  color: 'var(--text-primary)',
+                  colorScheme: 'dark'
+                }}
+              />
             </div>
-          )}
-        </div>
-      </form>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: '1 1 200px' }}>
+              <label style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>To Date (Resume Import)</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--glass-border)',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  color: 'var(--text-primary)',
+                  colorScheme: 'dark'
+                }}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', width: '100%' }}>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              style={{ padding: '12px 24px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}
+              disabled={loading}
+            >
+              {loading ? <Loader2 size={16} className="rag-spin" /> : <Sparkles size={16} />}
+              Analyze & Match Candidates
+            </button>
+          </div>
+        </form>
+      ) : (
+        <form className="rag-search-bar" onSubmit={handleSubmit}>
+          <div className={`rag-search-input-wrapper ${inputFocused ? 'rag-input-focused' : ''}`}>
+            <Search size={18} className="rag-search-icon" />
+            <input
+              ref={inputRef}
+              type="text"
+              className="rag-search-input"
+              placeholder={mode === 'search'
+                ? 'Search candidates by skills, experience, qualifications...'
+                : 'Ask anything about your candidates...'
+              }
+              value={query}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setTimeout(() => { setInputFocused(false); setShowSuggestions(false); }, 200)}
+              autoComplete="off"
+            />
+            <button
+              type="submit"
+              className="rag-search-btn"
+              disabled={!query.trim() || loading}
+            >
+              {loading ? <Loader2 size={18} className="rag-spin" /> : <ArrowRight size={18} />}
+            </button>
+
+            {/* Tag Suggestions Dropdown */}
+            {showSuggestions && suggestions.length > 0 && (
+              <div 
+                style={{ 
+                  position: 'absolute',
+                  top: '100%',
+                  left: 0,
+                  right: 0,
+                  marginTop: '8px',
+                  background: 'var(--bg-secondary)',
+                  border: '1px solid var(--glass-border)',
+                  borderRadius: 'var(--radius-md)',
+                  boxShadow: 'var(--shadow-lg)',
+                  zIndex: 50,
+                  maxHeight: '200px',
+                  overflowY: 'auto'
+                }}
+              >
+                {suggestions.map((suggestion, idx) => (
+                  <div 
+                    key={idx}
+                    className="rag-suggestion-item"
+                    onMouseDown={() => handleSuggestionClick(suggestion)}
+                  >
+                    <Tag size={12} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+                    <span>{suggestion}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </form>
+      )}
 
       {/* Search History */}
       {showHistory && (
@@ -565,6 +770,209 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
           </div>
         )}
 
+        {/* JD Match Results */}
+        {!loading && mode === 'match-jd' && jdResults && jdResults.length > 0 && (
+          <div className="rag-results">
+            <div className="rag-results-header">
+              <span className="rag-results-count">
+                Found <strong>{jdResults.length}</strong> matched candidate{jdResults.length !== 1 ? 's' : ''}
+              </span>
+              {queryTime && (
+                <span className="rag-results-time">
+                  in {queryTime}ms
+                </span>
+              )}
+            </div>
+
+            {jdResults.map((candidate, idx) => {
+              const dbCandidate = candidates.find(c => c.id === candidate.id) || candidate;
+              const score = candidate.matchScore || 0;
+              const isExpanded = !!expandedQuestions[candidate.id];
+
+              return (
+                <div
+                  key={candidate.id || idx}
+                  className="rag-result-card"
+                  style={{ animationDelay: `${idx * 50}ms` }}
+                >
+                  <div className="rag-result-top">
+                    <div className="rag-result-info">
+                      <div className="rag-result-avatar">
+                        <User size={18} />
+                      </div>
+                      <div className="rag-result-meta">
+                        <h4 className="rag-result-name">{candidate.name}</h4>
+                        <div className="rag-result-details">
+                          {candidate.email && (
+                            <span className="rag-result-detail">
+                              <Mail size={12} /> {candidate.email}
+                            </span>
+                          )}
+                          {candidate.seniorityLevel && (
+                            <span className="rag-result-detail">
+                              <Briefcase size={12} /> {candidate.seniorityLevel}
+                            </span>
+                          )}
+                          {candidate.createdAt && (
+                            <span className="rag-result-detail">
+                              <Calendar size={12} /> {new Date(candidate.createdAt).toLocaleDateString()}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className={`rag-score-badge ${score >= 80 ? 'rag-score-high' : score >= 50 ? 'rag-score-medium' : 'rag-score-low'}`} style={{
+                      backgroundColor: score >= 80 ? 'rgba(34, 197, 94, 0.15)' : score >= 50 ? 'rgba(234, 179, 8, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                      color: score >= 80 ? '#4ade80' : score >= 50 ? '#fef08a' : '#f87171',
+                      border: score >= 80 ? '1px solid rgba(34, 197, 94, 0.25)' : score >= 50 ? '1px solid rgba(234, 179, 8, 0.25)' : '1px solid rgba(239, 68, 68, 0.25)'
+                    }}>
+                      {score}% Match
+                    </div>
+                  </div>
+
+                  {/* Matching & Missing Skills */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
+                    {candidate.matchingSkills && candidate.matchingSkills.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#4ade80', width: '90px' }}>✓ Matches:</span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', flex: 1 }}>
+                          {candidate.matchingSkills.map((s, si) => (
+                            <span key={si} style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: 'rgba(34, 197, 94, 0.1)', color: '#4ade80', border: '1px solid rgba(34, 197, 94, 0.2)' }}>
+                              {s}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {candidate.missingSkills && candidate.missingSkills.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#fb7185', width: '90px' }}>✗ Missing:</span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', flex: 1 }}>
+                          {candidate.missingSkills.map((s, si) => (
+                            <span key={si} style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.08)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.15)' }}>
+                              {s}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {dbCandidate.skills && dbCandidate.skills.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', marginTop: '4px' }}>
+                        <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-secondary)', width: '90px' }}>All Skills:</span>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', flex: 1 }}>
+                          {dbCandidate.skills.map((s, si) => {
+                            const isMatch = candidate.matchingSkills?.some(ms => ms.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(ms.toLowerCase()));
+                            return (
+                              <span key={si} style={{ 
+                                fontSize: '11px', 
+                                padding: '2px 8px', 
+                                borderRadius: '4px', 
+                                background: isMatch ? 'rgba(34, 197, 94, 0.15)' : 'rgba(255, 255, 255, 0.03)', 
+                                color: isMatch ? '#4ade80' : 'var(--text-secondary)', 
+                                border: isMatch ? '1px solid rgba(34, 197, 94, 0.25)' : '1px solid var(--glass-border)' 
+                              }}>
+                                {s}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Explanation */}
+                  {candidate.explanation && (
+                    <div style={{ marginTop: '12px', padding: '10px 14px', borderRadius: 'var(--radius-md)', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--glass-border)' }}>
+                      <p style={{ fontSize: '13px', lineHeight: '1.5', color: 'var(--text-secondary)', margin: 0 }}>
+                        <strong>Analysis:</strong> {candidate.explanation}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* JD-Specific Interview Questions — shown directly */}
+                  {candidate.questions && (candidate.questions.hrQuestions?.length > 0 || candidate.questions.technicalQuestions?.length > 0) && (
+                    <div style={{ marginTop: '14px', padding: '12px 14px', borderRadius: 'var(--radius-md)', background: 'rgba(99, 102, 241, 0.04)', border: '1px solid rgba(99, 102, 241, 0.15)' }}>
+                      <h5 style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--accent-primary)', margin: '0 0 10px 0', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        📋 JD-Relevant Interview Questions
+                      </h5>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {/* HR Questions */}
+                        {candidate.questions.hrQuestions && candidate.questions.hrQuestions.length > 0 && (
+                          <div>
+                            <span style={{ fontSize: '11px', fontWeight: '700', color: '#a78bfa', display: 'block', marginBottom: '6px' }}>HR & Screening</span>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {candidate.questions.hrQuestions.slice(0, 3).map((q, qi) => (
+                                <div key={qi} style={{ fontSize: '12px', padding: '6px 10px', borderRadius: '4px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
+                                  <p style={{ margin: 0, fontWeight: '600', color: 'var(--text-primary)' }}>Q{qi+1}: {q.question}</p>
+                                </div>
+                              ))}
+                              {candidate.questions.hrQuestions.length > 3 && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                  +{candidate.questions.hrQuestions.length - 3} more in sidebar →
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {/* Technical Questions */}
+                        {candidate.questions.technicalQuestions && candidate.questions.technicalQuestions.length > 0 && (
+                          <div>
+                            <span style={{ fontSize: '11px', fontWeight: '700', color: '#34d399', display: 'block', marginBottom: '6px' }}>Technical & Domain</span>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {candidate.questions.technicalQuestions.slice(0, 3).map((q, qi) => (
+                                <div key={qi} style={{ fontSize: '12px', padding: '6px 10px', borderRadius: '4px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
+                                  <p style={{ margin: 0, fontWeight: '600', color: 'var(--text-primary)' }}>Q{qi+1}: {q.question}</p>
+                                </div>
+                              ))}
+                              {candidate.questions.technicalQuestions.length > 3 && (
+                                <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                                  +{candidate.questions.technicalQuestions.length - 3} more in sidebar →
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div className="rag-actions" style={{ marginTop: '16px', borderTop: '1px solid var(--glass-border)', paddingTop: '12px' }}>
+                    <button
+                      className="rag-action-btn rag-action-view"
+                      onClick={() => {
+                        if (onViewCandidate) {
+                          // Pass JD questions to the sidebar via the candidate object
+                          const candidateWithJdQuestions = { 
+                            ...dbCandidate, 
+                            jdQuestions: candidate.questions, 
+                            jdTitle: jdTitle, 
+                            jdRequirements: jdRequirements,
+                            jdDescription: jdDescription,
+                            matchScore: candidate.matchScore, 
+                            matchExplanation: candidate.explanation,
+                            matchingSkills: candidate.matchingSkills, 
+                            missingSkills: candidate.missingSkills 
+                          };
+                          onViewCandidate(candidateWithJdQuestions);
+                        }
+                      }}
+                    >
+                      <Eye size={14} /> View Profile
+                    </button>
+                    <button
+                      className="rag-action-btn rag-action-email"
+                      onClick={() => onEmailCandidate && onEmailCandidate(dbCandidate)}
+                    >
+                      <Mail size={14} /> Send Email
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Search Results */}
         {!loading && results && results.length > 0 && (
           <div className="rag-results">
@@ -612,6 +1020,11 @@ export default function RAGSearch({ candidates, onViewCandidate, onEmailCandidat
                           {seniority && (
                             <span className="rag-result-detail">
                               <Briefcase size={12} /> {seniority}
+                            </span>
+                          )}
+                          {candidate.createdAt && (
+                            <span className="rag-result-detail">
+                              <Calendar size={12} /> {new Date(candidate.createdAt).toLocaleDateString()}
                             </span>
                           )}
                         </div>

@@ -1,0 +1,93 @@
+diff --git a/server/geminiParser.js b/server/geminiParser.js
+--- a/server/geminiParser.js
++++ b/server/geminiParser.js
+@@ -757,29 +757,29 @@
+ function mapAnalysisToQuestions(parsedData) {
+-  let hrQuestions = [];
++  const fixedScreening = [
++    { question: "Tell me about your background and how it prepares you for this role?", answer: "I have a solid foundation in my field, have successfully delivered key projects in my previous roles, and quickly adapt to new stacks.", importance: "SCREENING" },
++    { question: "Why are you interested in joining our company?", answer: "I admire your company's innovation, culture, and project scale, and believe my skills align perfectly with your team's goals.", importance: "SCREENING" },
++    { question: "Describe a challenging situation at work and how you resolved it.", answer: "I faced a critical bug/blocker, analyzed the root cause, collaborated with the team, and deployed a resolution under pressure.", importance: "SCREENING" },
++    { question: "Where do you see yourself in five years?", answer: "I aim to grow technically, take on architectural ownership, and mentor junior colleagues while contributing to core business goals.", importance: "SCREENING" },
++    { question: "How do you handle disagreement within a technical team?", answer: "I present data, listen to other viewpoints objectively, and focus on the best solution for the project rather than personal opinion.", importance: "SCREENING" },
++    { question: "What are your salary expectations?", answer: "I am open to a competitive offer based on the role's responsibilities, my experience, and market standards.", importance: "SCREENING" },
++    { question: "Do you have any questions for us?", answer: "What are the biggest challenges the team is currently facing, and what does success look like in this role?", importance: "SCREENING" }
++  ];
++  let personalizedHrQuestions = [];
+   let technicalQuestions = [];
+ 
+   // 1. Map Career Gaps to HR
+   if (parsedData.career_gaps && Array.isArray(parsedData.career_gaps)) {
+     parsedData.career_gaps.forEach(gap => {
+       if (gap.interview_question && gap.sample_answer) {
+-        hrQuestions.push({
++        personalizedHrQuestions.push({
+           question: gap.interview_question,
+           answer: gap.sample_answer,
+           importance: 'MUST ASK'
+         });
+       }
+     });
+   }
+ 
+   // 2. Map HR Questions to HR
+   if (parsedData.hr_questions && Array.isArray(parsedData.hr_questions)) {
+     parsedData.hr_questions.forEach(q => {
+       if (q.question && q.sample_answer) {
+-        hrQuestions.push({
++        personalizedHrQuestions.push({
+           question: q.question,
+           answer: q.sample_answer,
+           importance: 'GOOD TO ASK'
+         });
+       }
+     });
+   }
+@@ -830,22 +830,23 @@
+-  // Slice or fill to exactly 7 HR questions
+-  if (hrQuestions.length > 7) {
+-    hrQuestions = hrQuestions.slice(0, 7);
+-  } else {
+-    const defaultHr = [
+-      { question: "Tell me about your background and how it prepares you for this role?", answer: "I have a solid foundation in my field, have successfully delivered key projects in my previous roles, and quickly adapt to new stacks.", importance: "OPTIONAL" },
+-      { question: "Why are you interested in joining our company?", answer: "I admire your company's innovation, culture, and project scale, and believe my skills align perfectly with your team's goals.", importance: "OPTIONAL" },
+-      { question: "Describe a challenging situation at work and how you resolved it.", answer: "I faced a critical bug/blocker, analyzed the root cause, collaborated with the team, and deployed a resolution under pressure.", importance: "OPTIONAL" },
+-      { question: "Where do you see yourself in five years?", answer: "I aim to grow technically, take on architectural ownership, and mentor junior colleagues while contributing to core business goals.", importance: "OPTIONAL" },
+-      { question: "How do you handle disagreement within a technical team?", answer: "I present data, listen to other viewpoints objectively, and focus on the best solution for the project rather than personal opinion.", importance: "OPTIONAL" },
+-      { question: "What are your salary expectations?", answer: "I am open to a competitive offer based on the role's responsibilities, my experience, and market standards.", importance: "OPTIONAL" },
+-      { question: "Do you have any questions for us?", answer: "What are the biggest challenges the team is currently facing, and what does success look like in this role?", importance: "OPTIONAL" }
+-    ];
+-    let idx = 0;
+-    while (hrQuestions.length < 7 && idx < defaultHr.length) {
+-      if (!hrQuestions.some(q => q.question === defaultHr[idx].question)) {
+-        hrQuestions.push(defaultHr[idx]);
+-      }
+-      idx++;
+-    }
+-  }
++  // Slice or fill personalized HR questions to exactly 7, then combine with fixed screening questions to make exactly 14
++  let slicedPersonalized = personalizedHrQuestions.slice(0, 7);
++  if (slicedPersonalized.length < 7) {
++    const fallbackPersonalized = [
++      { question: "What is your greatest professional achievement?", answer: "Successfully delivering a key project under budget and ahead of schedule.", importance: "OPTIONAL" },
++      { question: "How do you handle high-pressure situations or tight deadlines?", answer: "I stay organized, prioritize critical tasks, and communicate transparently with stakeholders.", importance: "OPTIONAL" },
++      { question: "Describe your experience working in a cross-functional team.", answer: "I regularly collaborate with designers, product managers, and QA engineers to align and deliver features.", importance: "OPTIONAL" },
++      { question: "How do you stay updated with industry developments and technologies?", answer: "I read tech blogs, participate in online dev communities, and build side projects in my spare time.", importance: "OPTIONAL" },
++      { question: "Tell me about a time you had to learn a new tool or language quickly.", answer: "I read the documentation, followed tutorials, and built a test application to rapidly gain proficiency.", importance: "OPTIONAL" },
++      { question: "How do you approach problem solving when you are stuck?", answer: "I review the logs, consult the documentation, search relevant forums, and ask senior peers for guidance if needed.", importance: "OPTIONAL" },
++      { question: "What values are most important to you in a work environment?", answer: "A culture of continuous learning, open collaboration, mutual respect, and high standards of execution.", importance: "OPTIONAL" }
++    ];
++    let idx = 0;
++    while (slicedPersonalized.length < 7 && idx < fallbackPersonalized.length) {
++      slicedPersonalized.push(fallbackPersonalized[idx]);
++      idx++;
++    }
++  }
++  const hrQuestions = [...fixedScreening, ...slicedPersonalized];
+@@ -885,2 +886,2 @@
+-5. HR & Behavioral: Generate EXACTLY 7 standard HR questions personalized with resume facts, plus model answers.
++5. HR & Behavioral: Generate EXACTLY 7 personalized HR/behavioral questions specific to the candidate's resume (e.g., about their projects, transitions, or achievements), avoiding generic questions, plus model answers.
+@@ -913,3 +914,3 @@
+ ### 5. HR & Behavioral Readiness
+-- Generate EXACTLY 7 standard HR questions, personalized with the candidate's actual details: tell me about yourself; reason for leaving most recent company; reason for seeking a new role; expected compensation; why hire you; key strengths; 5-year vision. Provide sample answers built from the candidate's actual resume facts.
++- Generate EXACTLY 7 personalized HR or behavioral questions specific to the candidate's unique background, projects, or employment history (e.g., asking about transitions between specific roles, leadership situations, or technical accomplishments). Avoid generic screening questions (such as "tell me about yourself" or "salary expectations") and provide sample answers grounded in their resume facts.
