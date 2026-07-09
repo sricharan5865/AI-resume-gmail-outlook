@@ -1412,13 +1412,53 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
   const { action, candidateId, tempFile, parsedData, pdfText, jobId, logId } = req.body;
   const data = (parsedData && typeof parsedData === 'object') ? parsedData : {};
 
+  if (tempFile) {
+    const rawResolvedPath = path.resolve(UPLOADS_DIR, tempFile);
+    if (!rawResolvedPath.startsWith(UPLOADS_DIR)) {
+      return res.status(400).json({ error: 'Invalid tempFile path.' });
+    }
+  }
+
+  const sanitizedTempFile = tempFile ? path.basename(tempFile) : null;
+
+  if (sanitizedTempFile) {
+    const resolvedPath = path.resolve(UPLOADS_DIR, sanitizedTempFile);
+    if (!resolvedPath.startsWith(UPLOADS_DIR)) {
+      return res.status(400).json({ error: 'Invalid tempFile path.' });
+    }
+  }
+
   try {
+    if (!['update', 'delete-before', 'remove', 'cancel'].includes(action)) {
+      if (logId) {
+        await IngestionLog.updateOne(
+          { id: logId },
+          { 
+            status: 'failed', 
+            error: 'Invalid action provided.'
+          }
+        ).catch(e => console.error('Failed to update ingestion log:', e));
+      }
+      return res.status(400).json({ error: 'Invalid action provided.' });
+    }
+
     if (action === 'update') {
       const candidate = await Candidate.findOne({ id: candidateId });
       if (!candidate) {
-        if (tempFile) {
-          const tempPath = path.join(UPLOADS_DIR, tempFile);
-          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        if (sanitizedTempFile) {
+          const tempPath = path.join(UPLOADS_DIR, sanitizedTempFile);
+          if (fs.existsSync(tempPath)) {
+            try { fs.unlinkSync(tempPath); } catch (e) {}
+          }
+        }
+        if (logId) {
+          await IngestionLog.updateOne(
+            { id: logId },
+            { 
+              status: 'failed', 
+              error: 'Candidate not found.'
+            }
+          ).catch(e => console.error('Failed to update ingestion log:', e));
         }
         return res.status(404).json({ error: 'Candidate not found.' });
       }
@@ -1427,7 +1467,7 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
       if (candidate.resumeUrl) {
         const oldFilename = candidate.resumeUrl.replace('/api/uploads/', '').replace('/uploads/', '');
         const oldFilepath = path.join(UPLOADS_DIR, oldFilename);
-        if (fs.existsSync(oldFilepath) && oldFilename !== tempFile) {
+        if (fs.existsSync(oldFilepath) && oldFilename !== sanitizedTempFile) {
           try { fs.unlinkSync(oldFilepath); } catch (e) {}
         }
       }
@@ -1441,8 +1481,8 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
       candidate.experience = data.experience || candidate.experience;
       candidate.education = data.education || candidate.education;
       candidate.resumeText = pdfText || candidate.resumeText;
-      if (tempFile) {
-        candidate.resumeUrl = `/api/uploads/${tempFile}`;
+      if (sanitizedTempFile) {
+        candidate.resumeUrl = `/api/uploads/${sanitizedTempFile}`;
       }
       if (jobId) {
         candidate.jobId = jobId;
@@ -1481,7 +1521,7 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
       candidate.history.push({
         date: new Date().toISOString(),
         type: 'Updated',
-        text: `Manual upload updated resume: ${tempFile ? tempFile.split('-').slice(2).join('-') : 'Updated'}`
+        text: `Manual upload updated resume: ${sanitizedTempFile ? sanitizedTempFile.split('-').slice(2).join('-') : 'Updated'}`
       });
 
       await candidate.save();
@@ -1519,11 +1559,12 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
           }
         }
         await Candidate.deleteOne({ id: candidateId });
+        removeCandidate(candidateId).catch(err => console.error('RAG removal failed:', err.message));
       }
 
       // Delete the new temp file
-      if (tempFile) {
-        const tempPath = path.join(UPLOADS_DIR, tempFile);
+      if (sanitizedTempFile) {
+        const tempPath = path.join(UPLOADS_DIR, sanitizedTempFile);
         if (fs.existsSync(tempPath)) {
           try { fs.unlinkSync(tempPath); } catch (e) {}
         }
@@ -1593,7 +1634,7 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
         education: data.education || [],
         tags: generatedTags,
         stage: 'Inbox',
-        resumeUrl: tempFile ? `/api/uploads/${tempFile}` : '',
+        resumeUrl: sanitizedTempFile ? `/api/uploads/${sanitizedTempFile}` : '',
         resumeText: pdfText,
         matchScore: scoringResult.score || 0,
         matchingSkills: scoringResult.matchingSkills || [],
@@ -1621,7 +1662,7 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
       newCandidate.history.push({
         date: new Date().toISOString(),
         type: 'Created',
-        text: `Sourced candidate from email ingestion: ${tempFile ? tempFile.split('-').slice(2).join('-') : 'Created'}`
+        text: `Sourced candidate from email ingestion: ${sanitizedTempFile ? sanitizedTempFile.split('-').slice(2).join('-') : 'Created'}`
       });
 
       await newCandidate.save();
@@ -1648,103 +1689,9 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
         candidate: candObj
       });
 
-    } else {
-      if (parsedData) {
-        let settings = await Settings.findById('global');
-
-        let ownCategoryResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
-        let scoringResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: '' };
-        let generatedTags = [];
-
-        let job = null;
-        if (jobId) {
-          job = await Job.findOne({ id: jobId });
-        }
-
-        try {
-          console.log('Running resolve-create scoring in parallel...');
-          const results = await Promise.all([
-            scoreCandidateByOwnCategory(data).catch(e => { console.error('Own category score failed:', e.message); return null; }),
-            job ? scoreCandidate(data, job).catch(e => { console.error('Job match score failed:', e.message); return null; }) : Promise.resolve(null),
-            generateTags(data, job || { title: 'General', description: '' }, settings?.tagPreferences || []).catch(e => { console.error('Tag generation failed:', e.message); return null; })
-          ]);
-          if (results[0]) ownCategoryResult = results[0];
-          if (results[1]) scoringResult = results[1];
-          if (results[2]) generatedTags = results[2];
-        } catch (err) {
-          console.error('Parallel resolve-create scoring failed:', err.message);
-        }
-
-        const newCandidate = new Candidate({
-          id: `candidate-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          jobId,
-          name: data.name || 'Unknown',
-          email: data.email || '',
-          phone: data.phone || '',
-          linkedinUrl: data.linkedinUrl || '',
-          skills: data.skills || [],
-          experience: data.experience || [],
-          education: data.education || [],
-          tags: generatedTags,
-          stage: 'Inbox',
-          resumeUrl: tempFile ? `/api/uploads/${tempFile}` : '',
-          resumeText: pdfText,
-          matchScore: scoringResult.score || 0,
-          matchingSkills: scoringResult.matchingSkills || [],
-          missingSkills: scoringResult.missingSkills || [],
-          matchExplanation: scoringResult.reasoning || '',
-          ownCategoryScore: ownCategoryResult.score || 0,
-          ownCategoryMatchingSkills: ownCategoryResult.matchingSkills || [],
-          ownCategoryMissingSkills: ownCategoryResult.missingSkills || [],
-          ownCategoryExplanation: ownCategoryResult.reasoning || '',
-          comments: '',
-          seniorityLevel: data.seniorityLevel || 'Mid',
-          hrQuestions: [],
-          technicalQuestions: [],
-          projects: data.projects || []
-        });
-
-        try {
-          const qna = await generateQuestionsForCandidate(newCandidate, job);
-          newCandidate.hrQuestions = qna.hrQuestions || [];
-          newCandidate.technicalQuestions = qna.technicalQuestions || [];
-        } catch (err) {
-          console.error('LLM Q&A generation failed during resolve create:', err.message);
-        }
-
-        newCandidate.history.push({
-          date: new Date().toISOString(),
-          type: 'Created',
-          text: `Sourced candidate from email ingestion: ${tempFile ? tempFile.split('-').slice(2).join('-') : 'Created'}`
-        });
-
-        await newCandidate.save();
-
-        if (logId) {
-          await IngestionLog.updateOne(
-            { id: logId },
-            { 
-              status: 'success', 
-              candidateId: newCandidate.id,
-              candidateName: newCandidate.name,
-              extractedData: data,
-              error: ''
-            }
-          ).catch(e => console.error('Failed to update ingestion log:', e));
-        }
-
-        searchIndex.buildIndex(await Candidate.find());
-        indexCandidate(newCandidate).catch(err => console.error('RAG index failed for', newCandidate.name, err.message));
-
-        const candObj = newCandidate.toObject();
-        return res.json({
-          ...candObj,
-          candidate: candObj
-        });
-      }
-
-      if (tempFile) {
-        const tempPath = path.join(UPLOADS_DIR, tempFile);
+    } else if (action === 'cancel') {
+      if (sanitizedTempFile) {
+        const tempPath = path.join(UPLOADS_DIR, sanitizedTempFile);
         if (fs.existsSync(tempPath)) {
           try { fs.unlinkSync(tempPath); } catch (e) {}
         }
@@ -1755,7 +1702,7 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
           { id: logId },
           { 
             status: 'cancelled', 
-            error: 'Duplicate upload cancelled by user.'
+            error: 'Discarded uploaded file.'
           }
         ).catch(e => console.error('Failed to update ingestion log:', e));
       }
@@ -1764,6 +1711,15 @@ app.post('/api/candidates/upload/resolve', authenticateToken, requireRole(['admi
     }
   } catch (error) {
     console.error('Failed to resolve duplicate upload:', error);
+    if (logId) {
+      await IngestionLog.updateOne(
+        { id: logId },
+        { 
+          status: 'failed', 
+          error: error.message
+        }
+      ).catch(e => console.error('Failed to update ingestion log:', e));
+    }
     res.status(500).json({ error: error.message });
   }
 });

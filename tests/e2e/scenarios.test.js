@@ -90,6 +90,7 @@ describe('Real-World Recruitment Lifecycle Scenarios (Tier 4)', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        action: 'delete-before',
         parsedData: {
           name: "John Doe Sourced",
           email: "sourced@example.com",
