@@ -144,6 +144,55 @@ function statefulJsonRepair(str) {
   return repaired;
 }
 
+function sanitizeStringArray(val) {
+  if (!val) return [];
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch (e) {
+          const doubleQuoted = trimmed
+            .replace(/'/g, '"')
+            .replace(/(\w+)\s*:/g, '"$1":');
+          parsed = JSON.parse(doubleQuoted);
+        }
+        if (Array.isArray(parsed)) {
+          return sanitizeStringArray(parsed);
+        }
+      } catch (err) {
+        // Fallback: try to extract question/text/prompt values specifically
+        const questions = [];
+        const regex = /(?:question|text|prompt)\s*:\s*['"]([^'"]+)['"]/gi;
+        let match;
+        while ((match = regex.exec(trimmed)) !== null) {
+          questions.push(match[1]);
+        }
+        if (questions.length > 0) {
+          return questions;
+        }
+        // Otherwise, split by lines and clean
+        return trimmed
+          .split('\n')
+          .map(l => l.replace(/^[-*•\d.\s[\]{}'"+]+/, '').trim())
+          .filter(l => l.length > 0 && !l.startsWith('"') && !l.startsWith("'"));
+      }
+    }
+    return [val];
+  }
+  if (Array.isArray(val)) {
+    return val.map(item => {
+      if (item && typeof item === 'object') {
+        return item.question || item.text || item.value || item.name || JSON.stringify(item);
+      }
+      return String(item);
+    }).filter(Boolean);
+  }
+  return [];
+}
+
 function normalizeJsonKeys(parsed, schema) {
   if (!parsed || typeof parsed !== 'object' || !schema || !schema.properties) {
     return parsed;
@@ -1129,6 +1178,23 @@ export async function parseResume(resumeText, pdfBase64 = null) {
     ? `Analyze the attached PDF resume and perform the recruiter seven-part analysis.`
     : `Parse this resume text and perform the recruiter seven-part analysis:\n\n${resumeText}`;
   const parsedData = await callAIProvider(prompt, systemInstruction, schema, canUsePdfDirectly ? pdfBase64 : null);
+  
+  if (parsedData) {
+    if (parsedData.interviewQuestions) {
+      parsedData.interviewQuestions = sanitizeStringArray(parsedData.interviewQuestions);
+    } else {
+      parsedData.interviewQuestions = [];
+    }
+    if (parsedData.skills) {
+      parsedData.skills = sanitizeStringArray(parsedData.skills);
+    } else {
+      parsedData.skills = [];
+    }
+    if (parsedData.must_prepare_topics) {
+      parsedData.must_prepare_topics = sanitizeStringArray(parsedData.must_prepare_topics);
+    }
+  }
+
   mapAnalysisToQuestions(parsedData);
   return parsedData;
 }
