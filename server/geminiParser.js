@@ -185,7 +185,7 @@ function sanitizeStringArray(val) {
   if (Array.isArray(val)) {
     return val.map(item => {
       if (item && typeof item === 'object') {
-        return item.question || item.text || item.value || item.name || JSON.stringify(item);
+        return item.skill || item.question || item.text || item.value || item.name || JSON.stringify(item);
       }
       return String(item);
     }).filter(Boolean);

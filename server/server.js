@@ -2120,6 +2120,19 @@ app.post('/api/rag/jd-search', authenticateToken, async (req, res) => {
       requirements: jdRequirements || '',
       description: jdDescription || ''
     };
+
+    // Extract core skills from jdRequirements for local filtering
+    const requiredSkills = [];
+    if (jdRequirements) {
+      jdRequirements.split(/[,\n;]/).forEach(s => {
+        const cleaned = s.trim().replace(/^[-*•\d.\s]+/, '').trim();
+        const lower = cleaned.toLowerCase();
+        const isExperienceOrMeta = lower.includes('year') || lower.includes('experience') || lower.includes('degree') || lower.includes('plus') || lower.includes('qualifications') || lower.includes('projects done');
+        if (cleaned.length > 1 && !isExperienceOrMeta) {
+          requiredSkills.push(lower);
+        }
+      });
+    }
     
     // Step 4: AI-score ONLY the RAG-relevant, date-filtered candidates
     const scoredCandidates = await Promise.all(
@@ -2145,28 +2158,55 @@ app.post('/api/rag/jd-search', authenticateToken, async (req, res) => {
             location: parsedCandidate.location || ''
           };
           
-          let scoreResult;
-          try {
-            scoreResult = await scoreCandidate(candidateForScoring, mockJob);
-          } catch (err) {
-            console.error(`Failed to score candidate ${candidate.id} (attempt 1):`, err.message);
-            try {
-              const condensedProfile = {
-                name: candidateForScoring.name,
-                skills: candidateForScoring.skills,
-                experience: (candidateForScoring.experience || []).map(e => ({
-                  role: e.role || e.title || '',
-                  company: e.company || '',
-                  startDate: e.startDate || '',
-                  endDate: e.endDate || ''
-                })),
-                education: candidateForScoring.education,
-                seniorityLevel: candidateForScoring.seniorityLevel
+          let scoreResult = null;
+
+          // Local pre-filtering check: if requirements has specific technical skills, candidate must match at least one
+          if (requiredSkills.length > 0) {
+            const candidateSkills = (parsedCandidate.skills || []).map(s => s.toLowerCase());
+            const projectSkills = (parsedCandidate.projects || []).flatMap(p => p.matchingSkills || []).map(s => s.toLowerCase());
+            const allCandidateSkills = new Set([...candidateSkills, ...projectSkills]);
+            
+            const matchingRequired = requiredSkills.filter(reqSkill => {
+              return Array.from(allCandidateSkills).some(candSkill => 
+                candSkill.includes(reqSkill) || reqSkill.includes(candSkill)
+              ) || (parsedCandidate.resumeText && parsedCandidate.resumeText.toLowerCase().includes(reqSkill));
+            });
+            
+            if (matchingRequired.length === 0) {
+              const missingStringList = requiredSkills.map(s => s.charAt(0).toUpperCase() + s.slice(1));
+              scoreResult = {
+                score: 0,
+                matchingSkills: [],
+                missingSkills: missingStringList,
+                reasoning: `Candidate lacks key required skills such as ${requiredSkills.join(', ')}.`
               };
-              scoreResult = await scoreCandidate(condensedProfile, mockJob);
-            } catch (retryErr) {
-              console.error(`Failed to score candidate ${candidate.id} (attempt 2):`, retryErr.message);
-              scoreResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: 'Evaluation failed - AI provider error' };
+              console.log(`JD Search: Candidate ${candidate.id} (${candidate.name}) skipped AI scoring (no skill overlap).`);
+            }
+          }
+
+          if (!scoreResult) {
+            try {
+              scoreResult = await scoreCandidate(candidateForScoring, mockJob);
+            } catch (err) {
+              console.error(`Failed to score candidate ${candidate.id} (attempt 1):`, err.message);
+              try {
+                const condensedProfile = {
+                  name: candidateForScoring.name,
+                  skills: candidateForScoring.skills,
+                  experience: (candidateForScoring.experience || []).map(e => ({
+                    role: e.role || e.title || '',
+                    company: e.company || '',
+                    startDate: e.startDate || '',
+                    endDate: e.endDate || ''
+                  })),
+                  education: candidateForScoring.education,
+                  seniorityLevel: candidateForScoring.seniorityLevel
+                };
+                scoreResult = await scoreCandidate(condensedProfile, mockJob);
+              } catch (retryErr) {
+                console.error(`Failed to score candidate ${candidate.id} (attempt 2):`, retryErr.message);
+                scoreResult = { score: 0, matchingSkills: [], missingSkills: [], reasoning: 'Evaluation failed - AI provider error' };
+              }
             }
           }
           
