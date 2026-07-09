@@ -755,7 +755,7 @@ export default function App() {
           </div>
           
 
-          {activeTab === 'ai-search' && (
+          <div style={{ display: activeTab === 'ai-search' ? 'block' : 'none', height: '100%' }}>
             <RAGSearch
               candidates={candidates}
               onViewCandidate={setSelectedCandidate}
@@ -764,7 +764,7 @@ export default function App() {
               BACKEND_URL={BACKEND_URL}
               token={token}
             />
-          )}
+          </div>
 
           <div style={{ display: activeTab === 'ingestion' ? 'block' : 'none', height: '100%' }}>
             <IngestionTracker backendUrl={BACKEND_URL} isActive={activeTab === 'ingestion'} token={token} />
