@@ -320,3 +320,30 @@ The remaining 7 should be the AI-generated, candidate-personalized HR questions 
 - Test AI Search: paste a GIS Analyst job description, verify candidates appear ranked with scores, matching/missing skills, and tailored questions
 - Test duplicate logs: drag a candidate to its current column, verify no new log entry appears
 - Test HR questions: open a newly parsed candidate, verify first 7 are the cold-calling questions
+
+## Follow-up — 2026-07-09T08:47:01+05:30
+
+The goal is to build and implement comprehensive automated E2E tests and perform an audit on the duplicate candidate upload and resolution pipeline (Update, Delete & Re-import, Delete Only, and Cancel) on the existing recruitment platform.
+
+Working directory: c:\Users\sri charan\Documents\projects\hr recruter
+Integrity mode: development
+
+## Requirements
+
+### R1. E2E Tests for Duplicate Resolution Options
+Create automated E2E tests using Vitest to verify all four duplicate resolution choices:
+1. Update: Overwrites existing candidate fields and resume URL, preserving the candidate ID.
+2. Delete Existing & Import New: Deletes the old candidate profile and indexes, then parses and imports the new resume as a fresh candidate.
+3. Delete Existing Only (Halt Import): Deletes the existing candidate and does not import the new file.
+4. Cancel (Discard Uploaded File): Discards the incoming temp file and leaves the database unmodified.
+
+### R2. Verification of Ingestion Log Statuses
+Verify that the IngestionLog status is correctly updated to 'success', 'cancelled', or 'failed' according to the selected resolution action.
+
+## Acceptance Criteria
+
+### E2E Test Suite
+- [ ] Implement automated test cases in `tests/e2e/duplicateResolution.test.js` covering all 4 resolution actions.
+- [ ] The test server should mock LLM parser calls correctly for duplicate scenarios.
+- [ ] Running `npm run test:e2e` runs all tests, including the new tests, successfully.
+

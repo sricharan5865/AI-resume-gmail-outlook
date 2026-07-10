@@ -265,8 +265,13 @@ export default function App() {
       }
     });
     showToast(`Successfully ${isUpdate ? 'updated' : 'extracted'} ${newCandidate.name} ${isUpdate ? 'in' : 'to'} the pipeline!`, 'success');
-    // Open candidate details automatically to see ranking
-    setSelectedCandidate(newCandidate);
+    // Update selected candidate details if they are currently viewing THIS exact candidate
+    setSelectedCandidate(prev => {
+      if (prev && prev.id === newCandidate.id) {
+        return newCandidate;
+      }
+      return prev;
+    });
   };
 
   const handleCandidateDeleted = (candidateId) => {
