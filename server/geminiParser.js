@@ -740,13 +740,16 @@ async function callAIProvider(prompt, systemInstruction = '', schema = null, pdf
       { role: 'user', content: userContent }
     ];
 
+    const estimatedTokens = ((finalSystem ? finalSystem.length : 0) + userContent.length) / 3.5;
+    const dynamicNumCtx = estimatedTokens > 3500 ? 8192 : 4096;
+
     const requestBody = {
       model: ollamaModel,
       messages,
       stream: false,
       options: {
         temperature: 0.1,
-        num_ctx: 4096, // Reduced from 8192 to prevent CPU offloading and keep it running fast in VRAM
+        num_ctx: dynamicNumCtx,
         num_predict: 2048
       }
     };
